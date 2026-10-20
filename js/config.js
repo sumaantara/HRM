@@ -5,5 +5,6 @@ window.HRM_CONFIG = {
   supabaseKey: "sb_publishable_BPYH1e77JQKm3URgqMclSg_NnGX9B0l",
   siteUrl: "https://sumaantara.github.io/HRM/",
   appName: "ONEderland HRM",
+  logo: "assets/logo.png",
   tagline: "Human Resource Management",
 };

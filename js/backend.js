@@ -109,7 +109,8 @@
     if (authView === "newpass") body = f(pass("New password (min. 8 characters)", "new-password"), "Save new password");
     const titles = { signin: "Sign in", signup: "Create your account", magic: "Sign in with email link", code: "Enter your code", forgot: "Reset your password", newpass: "Set a new password" };
     el.innerHTML = `<div class="auth-card" role="dialog" aria-labelledby="auth-t">
-      <div class="auth-brand"><span class="logo" aria-hidden="true">${esc(name.replace(/[^A-Za-z]/g, "").slice(0, 2).toUpperCase())}</span><div><b>${esc(name)}</b><small>${esc(CFG.tagline || "Human Resource Management")}</small></div></div>
+      ${CFG.logo ? `<div class="auth-brand auth-logo"><img src="${esc(CFG.logo)}" alt="${esc(name)}"><small>${esc(CFG.tagline || "Human Resource Management")}</small></div>`
+        : `<div class="auth-brand"><span class="logo" aria-hidden="true">${esc(name.replace(/[^A-Za-z]/g, "").slice(0, 2).toUpperCase())}</span><div><b>${esc(name)}</b><small>${esc(CFG.tagline || "Human Resource Management")}</small></div></div>`}
       <h1 id="auth-t">${titles[authView]}</h1>
       ${authMsg ? `<div class="note ${/sent|check|saved|created/i.test(authMsg) ? "" : "warn"}" role="status"><div>${esc(authMsg)}</div></div>` : ""}
       ${body}

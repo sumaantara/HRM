@@ -1688,7 +1688,8 @@ async function setLogo(file){
 const company = () => Object.assign({name:"ONEderland", tagline:"HRM · Enterprise", logo:""}, cfg().company || {});
 function renderBrand(){
   const c = company(), el = document.getElementById("brand"); if(!el) return;
-  el.innerHTML = c.logo ? `<img class="logo-img" src="${esc(assetSrc(c.logo))}" alt="${esc(c.name)} logo"><div style="min-width:0"><b>${esc(c.name)}</b><small>${esc(c.tagline)}</small></div>`
+  const logo = c.logo || (window.HRM_CONFIG && window.HRM_CONFIG.logo) || "";
+  el.innerHTML = logo ? `<div class="brand-mark"><img class="logo-wide" src="${esc(assetSrc(logo))}" alt="${esc(c.name)}"><small>HR Management</small></div>`
     : `<span class="logo" aria-hidden="true">${esc(c.name.replace(/[^A-Za-z]/g,"").slice(0,2).toUpperCase() || "HR")}</span><div style="min-width:0"><b>${esc(c.name)}</b><small>${esc(c.tagline)}</small></div>`;
 }
 

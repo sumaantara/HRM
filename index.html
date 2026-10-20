@@ -355,6 +355,8 @@ img.av{object-fit:cover;background:var(--sunk);display:block}
 .avbtn svg.i{width:15px;height:15px}
 .avwrap:has(.btn) .avbtn{bottom:22px}
 .logo-img{max-height:40px;max-width:110px;object-fit:contain;flex:none}
+.brand-mark{display:flex;flex-direction:column;gap:7px;min-width:0;width:100%}
+.logo-wide{display:block;width:auto;max-width:100%;height:auto;max-height:42px;object-fit:contain;object-position:left center}
 .brand b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .logo-prev{min-width:120px;min-height:64px;display:grid;place-items:center;padding:10px;border:1px dashed var(--line2);border-radius:12px;background:var(--sunk)}
 .logo-prev img{max-height:80px;max-width:240px}
@@ -418,6 +420,7 @@ body.auth-on .app{visibility:hidden}
 .auth-card{width:100%;max-width:420px;background:var(--surface);border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow);padding:32px 28px;display:flex;flex-direction:column;gap:18px}
 .auth-brand{display:flex;align-items:center;gap:12px}.auth-brand b{display:block;font-family:var(--f-head);font-size:1.05rem}.auth-brand small{color:var(--muted)}
 .auth-card h1{font-size:1.4rem}
+.auth-logo{flex-direction:column;align-items:flex-start;gap:8px}.auth-logo img{display:block;max-width:240px;width:100%;height:auto}
 .auth-form{display:flex;flex-direction:column;gap:14px}.auth-form .btn.pri{justify-content:center;min-height:44px}
 .auth-links{display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px}
 .auth-alt,.auth-hint,.auth-foot{color:var(--muted);font-size:.86rem}.auth-foot{border-top:1px solid var(--line);padding-top:14px}
@@ -427,7 +430,7 @@ body.auth-on .app{visibility:hidden}
 <div class="auth" id="auth" hidden></div>
 <div class="app" id="app">
   <aside class="sb" id="sb" aria-label="Main navigation">
-    <div class="brand" id="brand"><span class="logo" aria-hidden="true">ON</span><div><b>ONEderland</b><small>HRM · Enterprise</small></div></div>
+    <div class="brand" id="brand"><div class="brand-mark"><img class="logo-wide" src="assets/logo.png" alt="ONEderland"><small>HR Management</small></div></div>
     <nav class="nav" id="nav"></nav>
     <div class="sb-foot" id="sbfoot"></div>
   </aside>
