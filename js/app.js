@@ -289,7 +289,7 @@ const dv = (k, n, d) => (S.drafts[k] && n in S.drafts[k]) ? S.drafts[k][n] : d;
    rd/<uid>, ph/<uid>   per-person read receipts and self-uploaded profile photo
    audit/<uid>/m/<yyyy-mm>  each person's own monthly audit trail
    requests, notifs, counters   shared working data (Contributors write) */
-const APP_VERSION = "3.2.0", SCHEMA = 2;
+const APP_VERSION = "3.3.0", SCHEMA = 2;
 const PRIVATE_FIELDS = ["phone","gender","birthDate","exitReason","contract","contracts","notes","quotaLog"];
 const SUB_COLS = ["employees","private","requests","candidates","tasks","reviews","reminders","notifs","announcements","attendance","attImports","backups","dec","links","rd","ph","sub"];
 const CORE_COLS = ["employees","requests","tasks","notifs","announcements","attendance"];
@@ -919,7 +919,7 @@ function todayStrip(scope){
 function dashHead(m, actions){
   const d = new Date(), hr = d.getHours(), greet = hr < 11 ? "Good morning" : hr < 15 ? "Good afternoon" : hr < 19 ? "Good evening" : "Good night";
   return `<div class="page-h"><div><span class="label">${DOWL[d.getDay()]}, ${d.getDate()} ${MONL[d.getMonth()]} ${d.getFullYear()}</span><h1 style="margin-top:4px">${greet}, ${esc(m.name.split(" ")[0])}</h1></div><div class="row">${actions}</div></div>`
-   + (E().some(e => e.example) ? `<div class="note">${ic("info")}<div><b>Sample data.</b> All people and records are fictional. ${S.mode === "db" ? (realAdmin() ? `As Admin you can act on behalf of any sample person from the profile menu (top right) — e.g. <b>Budi Santoso</b> (HRD), <b>Gede Saputra</b> (Supervisor) or <b>Komang Wira</b> (Employee). Remove the sample data in System → Maintenance before going live.` : "The administrator will replace it with real data before go-live.") : `Switch roles from the profile menu at the top right.`}</div></div>` : "");
+   + (E().some(e => e.example) ? `<div class="note">${ic("info")}<div><b>Sample data.</b> All people and records are fictional. ${S.mode === "db" ? (realAdmin() ? `As Admin you can act on behalf of any sample person from the profile menu (top right) — e.g. <b>Budi Santoso</b> (HRD), <b>Gede Saputra</b> (Supervisor) or <b>Komang Wira</b> (Employee). Remove the sample data before going live.<div style="margin-top:10px">${sampleBtn()}</div>` : "The administrator will replace it with real data before go-live.") : `Switch roles from the profile menu at the top right.`}</div></div>` : "");
 }
 
 function vDashboard(){
@@ -1252,7 +1252,8 @@ function vProfile(){
       ${canEditPhoto(e.id) && e.photo ? `<button class="btn link small" type="button" data-act="photo-del" data-id="${e.id}" style="display:block;margin:6px auto 0">Remove</button>` : ""}</div>
     <div style="flex:1;min-width:220px"><h1>${esc(e.name)}</h1><p class="muted">${esc(e.position)} · ${esc(e.division || e.dept)}${e.office ? ` · ${ic("pinmap","inline")} ${esc(e.office)}` : ""}</p>
       <div class="row" style="gap:8px;margin-top:10px"><span class="tag">${esc(e.empNo)}</span><span class="pill ${e.status==="Probation"?"p-info":e.status==="Resigned"?"p-cancelled":"p-active"}">${esc(e.status)}</span><span class="tag">${esc(jobOf(e))}</span>${e.role==="hrd"?`<span class="tag">HRD admin</span>`:""}${priv?`<span class="pill p-${cs.k}">${esc(e.contract?.type||"")} · ${esc(cs.t)}</span>`:""}</div></div>
-    <div class="row">${isHR() ? `<button class="btn" type="button" data-act="emp-edit" data-id="${e.id}">${ic("edit")}Edit</button>` : ""}
+    <div class="row">${isHR() && !e.system ? `<span class="pill ${inviteState(e)[1]}" title="HRM account">${esc(inviteState(e)[0])}</span>${canInvite(e) ? `<button class="btn" type="button" data-act="invite" data-id="${e.id}">${ic("mail")}${e.invitedAt ? "Resend invitation" : "Send invitation"}</button>` : ""}` : ""}
+      ${isHR() ? `<button class="btn" type="button" data-act="emp-edit" data-id="${e.id}">${ic("edit")}Edit</button>` : ""}
       ${isHR() && !self ? `<button class="btn pri" type="button" data-act="task-new" data-emp="${e.id}">${ic("star")}Request review</button>` : ""}</div></div>
     <div class="tabs" role="tablist" style="padding:0 14px">${tabs.map(([k,l]) => `<button type="button" role="tab" data-act="ptab" data-v="${k}" aria-selected="${(S.ui.ptab||"overview")===k}">${l}</button>`).join("")}</div></section>
   ${!priv ? `<div class="note">${ic("info")}<div>Contract, notes, leave and performance details are only visible to ${esc(first(id))}, their supervisor, HRD and the General Manager.</div></div>` : ""}
@@ -1913,7 +1914,8 @@ async function runImport(){
   }
   const ok = await run(async () => { if(cfgChanged) await store.config(c); for(const d of docs) await store.put("employees", d); audit("employees_imported", I.file, `${rows.filter(r => r.action === "new").length} new, ${rows.filter(r => r.action === "update").length} updated`); },
     `Imported ${rows.filter(r => r.action === "new").length} new and updated ${rows.filter(r => r.action === "update").length} employee(s).`);
-  if(ok){ S.ui.empImp = null; S.ui.empImpOpen = false; render(); }
+  if(ok){ S.ui.empImp = null; S.ui.empImpOpen = false; render();
+    if(autoInvite()) inviteMany(docs.filter(d => !d.invitedAt).map(d => d.id)); }
 }
 
 /* ---------- announcements ---------- */
@@ -2095,6 +2097,7 @@ async function saveEmp(){
       {heading:`${e.name} is joining your team`, intro:`${e.name} was added to the HRM with you as their direct supervisor.`, rows:[["Position", e.position || "—"], ["Department", e.dept || "—"], ["Office", e.office || "—"], ["Start date", fmt(e.joinDate)]], tone:"ok", cta:{label:"View profile", go:"profile", ref:e.id}});
   }, fromCand ? `${e.name} hired as ${e.empNo}.` : `${e.name} saved.`);
   if(!e0) go("profile", {id:e.id});
+  if(autoInvite() && (!e0 || (e0.email || "").toLowerCase() !== (e.email || "").toLowerCase()) && canInvite(emp(e.id))) inviteEmp(e.id);
 }
 function mContract(){
   const e = emp(S.modal.id), k = "ct-"+e.id, type = dv(k,"type","PKWT"), start = dv(k,"start", e.contract?.end ? addDays(e.contract.end,1) : today());
@@ -2232,7 +2235,7 @@ function vSettings(){
         <td data-l="Admin"><input type="checkbox" data-access="admin" data-id="${e.id}" ${e.admin?"checked":""} aria-label="Admin access for ${esc(e.name)}"></td></tr>`).join("")}</tbody></table></div>
     <div class="card-h" style="border-top:1px solid var(--line)"><h2>Data</h2></div>
     <div class="card-b stack"><p class="muted">Remove the fictional sample company before going live. This deletes ${ex} sample record(s) — employees, requests, candidates, reviews, attendance, announcements and notifications marked as samples — plus anything that belongs to the removed sample employees. Settings, offices, divisions and job levels are kept. This can't be undone.</p>
-      <div>${ex ? `<button class="btn bad" type="button" data-act="wipe-sample">${ic("trash")}${S.ui.wipe ? "Click again to delete permanently" : "Remove sample data"}</button>` : `<span class="pill p-approved">No sample data left</span>`}</div></div>`;
+      <div>${ex ? sampleBtn() : `<span class="pill p-approved">No sample data left</span>`}</div></div>`;
   } else if(tab === "company"){
     const c = company();
     body = `<div class="card-b stack"><p class="muted">Shown in the sidebar for everyone. The logo is resized automatically; a wide PNG with a transparent background looks best.</p>
@@ -2254,6 +2257,7 @@ function vSettings(){
     const groups = [...new Set(Object.values(NOTIFY).map(d => d[5]))], noMail = activeE().filter(e => !e.system && (!e.email || /@example\.com$/i.test(e.email)));
     body = `<div class="card-b stack"><p class="muted">Every event below always appears in the person's notification bell. Tick <b>Email</b> to also send it to their work email — sent by the HRM's mail server, only to employees in the directory, with a button that opens the right page.</p>
       ${noMail.length ? `<div class="note warn">${ic("alert")}<div><b>${noMail.length} active employee${noMail.length === 1 ? "" : "s"} without a real work email</b> (${esc(noMail.slice(0, 4).map(e => e.name).join(", "))}${noMail.length > 4 ? "…" : ""}) won't receive emails. Add the email on their profile.</div></div>` : `<div class="note">${ic("check")}<div>Every active employee has a work email on file.</div></div>`}
+      <label class="chk"><input type="checkbox" data-cfg="autoInvite" ${autoInvite() ? "checked" : ""} ${ro ? "disabled" : ""}><span><b>Send an invitation automatically when an employee is added</b><br><span class="muted small">New employees (added one by one or imported) and changed emails get an email with a link to set their password and sign in. You can also send or resend it from the profile or System → Accounts.</span></span></label>
       <div class="row"><button class="btn" type="button" data-act="mail-test">${ic("mail")}Send a test email to me</button><span class="small muted">${esc(me()?.email || "No email on your profile")}</span></div></div>
     ${groups.map(g => `<div class="card-h" style="border-top:1px solid var(--line)"><h2>${esc(g)}</h2></div>
       <div class="tw"><table class="t rt nt-t"><thead><tr><th>Event</th><th>Sent to</th><th class="c">In-app</th><th class="c">Email</th></tr></thead><tbody>
@@ -2596,10 +2600,10 @@ function sysAccounts(){
     <h3 class="sub" style="margin:0">Who can do what</h3>
     <div class="tw" style="border:1px solid var(--line);border-radius:10px"><table class="t"><thead><tr><th>Permission</th><th>Staff</th><th>Supervisor / Manager</th><th>General Manager</th><th>HRD</th><th>Admin</th></tr></thead><tbody>
       ${matrix.map(r => `<tr><td style="white-space:normal">${r[0]}</td>${r.slice(1).map(x => `<td>${x}</td>`).join("")}</tr>`).join("")}</tbody></table></div></div>
-  <div class="card-h" style="border-top:1px solid var(--line)"><h2>People & access</h2></div>
+  <div class="card-h" style="border-top:1px solid var(--line)"><h2>People & access</h2>${activeE().some(x => canInvite(x) && !x.invitedAt) ? `<button class="btn sm pri" type="button" data-act="invite-all" style="margin-left:auto">${ic("mail")}Invite everyone not yet invited (${activeE().filter(x => canInvite(x) && !x.invitedAt).length})</button>` : ""}</div>
   <div class="tw"><table class="t rt"><thead><tr><th>Person</th><th>Signed-in account</th><th>Access level</th><th>HRD</th><th>Admin</th><th></th></tr></thead><tbody>
     ${accts.map(e => { const p = e.userId ? prof(e.userId) : null, need = e.admin || e.role === "hrd" || e.role === "gm" ? "HR editor" : "Employee";
-      return `<tr><td class="wide">${who(e.id, e.system ? "System account" : e.position)}</td><td data-l="Account">${e.userId ? `<span class="pill p-active">Linked</span> <span class="small muted">${esc(p?.name || "")}</span>` : `<span class="pill p-neutral">Not linked</span>`}</td>
+      return `<tr><td class="wide">${who(e.id, e.system ? "System account" : e.position)}</td><td data-l="Account">${e.userId ? `<span class="pill p-active">Linked</span> <span class="small muted">${esc(p?.name || "")}</span>` : `<span class="pill ${inviteState(e)[1]}">${esc(inviteState(e)[0])}</span>${canInvite(e) ? ` <button class="btn link small" type="button" data-act="invite" data-id="${e.id}">${e.invitedAt ? "Resend" : "Invite"}</button>` : !e.system && (!e.email || /@example\.com$/i.test(e.email)) ? ` <span class="small muted">no work email</span>` : ""}`}</td>
         <td data-l="Access">${need}</td>
         <td data-l="HRD"><input type="checkbox" data-access="hrd" data-id="${e.id}" ${e.role==="hrd"?"checked":""} ${e.system?"disabled":""} aria-label="HRD access for ${esc(e.name)}"></td>
         <td data-l="Admin"><input type="checkbox" data-access="admin" data-id="${e.id}" ${e.admin?"checked":""} aria-label="Admin access for ${esc(e.name)}"></td>
@@ -2671,10 +2675,35 @@ async function loadAudit(){
   for(const u of uids){ try { const s = await S.db.doc(`audit/${u}/m/${A.ym}`).get(); if(s.exists) rows.push(...(s.data().ev || [])); } catch(e){} }
   A.rows = rows.sort((a,b) => b.t.localeCompare(a.t)); A.loading = false; render();
 }
+/* invitations: an email with a link to set a password, sent by the server (Supabase Auth) */
+const canInvite = e => !!e && !e.system && e.status !== "Resigned" && !e.userId && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e.email || "") && !/@example\.com$/i.test(e.email);
+const inviteState = e => e?.userId ? ["Account active", "p-active"] : e?.invitedAt ? [`Invited ${fmtS(e.invitedAt.slice(0,10))}`, "p-pending"] : ["Not invited", "p-neutral"];
+async function inviteEmp(id, quiet){
+  const e = emp(id); if(!window.HRM || !e) return {status:"skip"};
+  if(!canInvite(e)){ if(!quiet) toast(e.userId ? `${e.name} already uses the HRM.` : !e.email || /@example\.com$/i.test(e.email) ? `Add ${e.name}'s real work email first.` : "This person can't be invited."); return {status:"skip"}; }
+  try { const r = await window.HRM.invite(id);
+    if(!quiet) toast(r.status === "sent" ? `Invitation sent to ${e.email}.` : r.status === "reset" ? `${e.name} already had an account — a link to set the password was sent to ${e.email}.` : r.status === "linked" ? `${e.name} already uses the HRM.` : `Invitation not sent: ${r.reason || r.status}.`);
+    if(r.status === "sent" || r.status === "reset") audit("invitation_sent", `${e.empNo} ${e.name}`, e.email);
+    return r; }
+  catch(err){ if(!quiet) toast(`Invitation not sent: ${err?.message || "the server didn't respond"}.`); return {status:"error", reason:err?.message}; }
+}
+async function inviteMany(ids){
+  const list = ids.filter(id => canInvite(emp(id))); if(!list.length) return;
+  toast(`Sending ${list.length} invitation(s)…`); let ok = 0, fail = 0;
+  for(const id of list){ const r = await inviteEmp(id, true); if(r.status === "sent" || r.status === "reset") ok++; else fail++; }
+  toast(`${ok} invitation(s) sent${fail ? `, ${fail} failed — check System → Accounts` : ""}.`); render();
+}
+const autoInvite = () => cfg().autoInvite !== false;
+const sampleCount = () => COLS.reduce((n,c) => n + (S.D[c] || []).filter(x => x.example).length, 0);
+const sampleBtn = () => `<button class="btn bad" type="button" data-act="wipe-sample">${ic("trash")}${S.ui.wipe ? "Click again to delete permanently" : "Remove sample data"}</button>`;
 function sysMaint(){
+  const exN = sampleCount();
+  const sampleCard = exN ? `<div class="card-b stack" style="border-bottom:1px solid var(--line)"><h3 class="sub" style="margin:0">Sample data</h3>
+    <p class="muted">${exN} fictional record(s) from the demo company are still in the database (Budi Santoso, Siti Rahmawati and others, with their requests, reviews and attendance). Remove them before entering real employees. Your own Admin account is kept. A backup is a good idea first.</p>
+    <div>${realAdmin() ? sampleBtn() : `<span class="small muted">Only Admin can remove sample data.</span>`}</div></div>` : "";
   const sys = SYS(), n = (k, l, h, min, max) => `<label class="f"><span>${l}</span><input type="number" min="${min}" max="${max}" data-cfg="system.${k}" value="${sys[k]}"><small>${h}</small></label>`;
   const btn = (k, l, cls) => `<button class="btn sm ${cls||""}" type="button" data-act="maint" data-v="${k}">${S.ui.confirmMaint === k ? "Click again to confirm" : l}</button>`;
-  return `<div class="card-b stack"><h3 class="sub" style="margin:0">Data retention</h3>
+  return `${sampleCard}<div class="card-b stack"><h3 class="sub" style="margin:0">Data retention</h3>
     <div class="fields">${n("notifDays","Keep notifications (days)","Older notifications are removed by the cleanup below.",14,730)}${n("reqYears","Keep leave & WFH requests (years)","Older closed requests are archived (deleted after a backup).",1,10)}
       ${n("attMonths","Keep attendance (months)","Older attendance months are archived.",6,120)}${n("anonYears","Anonymize former employees after (years)","Personal data of people who left is removed; headcount history stays.",1,10)}</div>
     <label class="f" style="max-width:320px"><span>Company time zone</span><select data-cfg="timezone">${[["Asia/Makassar","WITA — Bali, Gili, Lombok (UTC+8)"],["Asia/Jakarta","WIB — Jakarta, Surabaya (UTC+7)"],["Asia/Jayapura","WIT (UTC+9)"]].map(([v,l]) => `<option value="${v}" ${TZ()===v?"selected":""}>${l}</option>`).join("")}</select><small>Decides what “today” means for deadlines, reminders and backdating rules.</small></label></div>
@@ -2690,7 +2719,7 @@ function sysMaint(){
 function sysRunbook(){
   const sec = (t, items) => `<div><h3 style="margin-bottom:8px">${t}</h3><ol class="steps">${items.map(i => `<li>${i}</li>`).join("")}</ol></div>`;
   return `<div class="card-b stack" style="max-width:860px">
-    ${sec("Go-live checklist", ["Remove sample data (System → Maintenance) and import your employees from the Excel template.", "Give every employee their <b>Employee ID</b> — they need it to connect their account.", "Make sure every employee profile has the person's work email — accounts connect automatically when the verified email matches.", "Send everyone the HRM link; they create an account with that email and confirm it. Approve the few manual requests from Employees or System → Accounts.", "Make the first backup to cloud storage and download a second copy."])}
+    ${sec("Go-live checklist", ["Remove sample data (System → Maintenance) and import your employees from the Excel template.", "Make sure every employee profile has the person's work email — accounts connect automatically when the verified email matches.", "Invitations go out automatically when employees are added (or use System → Accounts → Invite everyone). Each person sets a password from the email and signs in.", "Make the first backup to cloud storage and download a second copy."])}
     ${sec("Weekly (HRD)", ["Back up when the banner asks (default every 7 days).", "Clear <b>Needs attention</b> on the dashboard: contracts ending, overdue reviews, stuck approvals."])}
     ${sec("Monthly (HRD / Admin)", ["Upload last month's attendance export.", "Open System → Health: integrity issues should be zero.", "Check Accounts: new joiners are connected, people who left are unlinked."])}
     ${sec("Quarterly (Admin)", ["Restore drill: download a backup and check it opens in the Restore screen (stop before typing RESTORE).", "Run Maintenance → clean up notifications and archive old records after a fresh backup.", "Review the audit log for unexpected changes to quotas, access or settings."])}
@@ -2797,6 +2826,8 @@ document.addEventListener("click", async ev => {
     case "hire": S.ui.empErr = ""; S.modal = {kind:"emp", cand:id}; renderModal(); return;
     case "emp-new": S.ui.empErr = ""; S.modal = {kind:"emp"}; renderModal(); return;
     case "first-hr": S.ui.empErr = ""; S.drafts["emp-new"] = {hrAdmin:isAdmin(), jobLevel:"Supervisor", position:"HR Manager", dept:"Human Resources", status:"Active", ctype:"PKWTT", joinDate:today()}; S.modal = {kind:"emp"}; renderModal(); return;
+    case "invite": await inviteEmp(id); render(); return;
+    case "invite-all": await inviteMany(activeE().filter(x => canInvite(x) && !x.invitedAt).map(x => x.id)); return;
     case "emp-edit": S.ui.empErr = ""; S.modal = {kind:"emp", id, rev:emp(id)?.rev}; renderModal(); return;
     case "contract-new": S.modal = {kind:"contract", id, rev:emp(id)?.rev}; renderModal(); return;
     case "quota-adj": if(!isHR()) return; S.ui.qErr = ""; delete S.drafts["qa-"+id]; S.modal = {kind:"quota", id, type:v, rev:emp(id)?.rev}; renderModal(); return;

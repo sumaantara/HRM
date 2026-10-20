@@ -34,20 +34,21 @@ Browser ──► GitHub Pages (index.html, js/app.js, js/backend.js)        sta
 The level is computed on the server from the employee profile (`public.hrm_level()`), so changing someone's role in the
 app changes their access within a minute. A profile set to **Resigned** loses access automatically.
 
-### Account linking
-1. HRD puts each person's **work email** on their profile.
-2. The person opens the site → **Create your account** with that email → confirms the email.
-3. On first sign-in the account connects to the profile automatically (verified email match).
-   Without a matching email the person can send a request with Employee ID + full name; HRD/Admin approve it
-   in Employees or System → Accounts.
+### Accounts are invitation-only
+1. HRD adds the employee (one by one or by Excel import) with their **work email**.
+2. The HRM emails an invitation automatically (switch: Settings → Notifications). HRD can also press
+   **Send / Resend invitation** on the profile, or **Invite everyone not yet invited** in System → Accounts.
+3. The person clicks **Set my password**, chooses a password and lands in the app — the account is already
+   connected to their profile (verified email). Later sign-ins: work email + password, or *Forgot password?*.
 
 ## One-time setup (Supabase dashboard)
 
 1. **Authentication → URL Configuration**
    - Site URL: `https://sumaantara.github.io/HRM/`
    - Redirect URLs: add `https://sumaantara.github.io/HRM/**`
-2. **Authentication → Sign In / Providers → Email:** keep **Confirm email = ON** (required — linking trusts verified emails).
-   Set minimum password length to 8.
+2. **Authentication → Sign In / Providers:** turn **Allow new users to sign up = OFF** (accounts come only from
+   HR invitations). Under **Email** keep **Confirm email = ON**, minimum password length 8, and set
+   **Email OTP Expiration** to `86400` seconds so invitation links stay valid for 24 hours.
 3. **Authentication → SMTP Settings → Enable custom SMTP** (required: the built-in sender only delivers to your own
    Supabase team, max a few emails per hour). Example with Gmail (needs 2-Step Verification + an App Password):
    host `smtp.gmail.com`, port `465`, user `your@gmail.com`, password = the 16-character app password,

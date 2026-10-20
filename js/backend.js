@@ -14,6 +14,8 @@
     document.addEventListener("DOMContentLoaded", () => showFatal("The app isn't configured yet (js/config.js)."));
     return;
   }
+  // links from invitation / password-reset emails land here with #...&type=invite|recovery
+  const LINK = (() => { try { const h = new URLSearchParams(location.hash.slice(1)); return { type: h.get("type") || "", error: h.get("error_description") || "" }; } catch (e) { return { type: "", error: "" }; } })();
   const sb = window.supabase.createClient(CFG.supabaseUrl, CFG.supabaseKey, {
     auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
   });
@@ -63,15 +65,13 @@
   sb.auth.onAuthStateChange((event, session) => {
     if (event === "PASSWORD_RECOVERY") { authView = "newpass"; showAuth(); return; }
     if (event === "SIGNED_OUT") { location.reload(); return; }
-    if (session && !who && authView !== "newpass" && event !== "INITIAL_SESSION") enter().catch(fatalFromError);
+    if (session && !who && !setsPassword() && event !== "INITIAL_SESSION") enter().catch(fatalFromError);
   });
 
   async function start() {
-    const hp = new URLSearchParams(location.hash.slice(1));
-    const hashErr = hp.get("error_description");
-    if (hp.get("type") === "recovery") authView = "newpass";
+    const hashErr = LINK.error;
     const { data } = await sb.auth.getSession();
-    if (data.session && authView !== "newpass") {
+    if (data.session && !setsPassword()) {
       try { await enter(); } catch (e) { fatalFromError(e); }
     } else {
       showAuth(hashErr ? decodeURIComponent(hashErr.replace(/\+/g, " ")) : "");
@@ -79,8 +79,9 @@
   }
 
   /* ------------------------------------------------------------------ sign-in screen */
-  let authView = "signin";
+  let authView = LINK.type === "invite" ? "welcome" : LINK.type === "recovery" ? "newpass" : "signin";
   let authMsg = "";
+  const setsPassword = () => authView === "newpass" || authView === "welcome";
   function showAuth(msg) {
     if (msg !== undefined) authMsg = msg;
     const el = $("auth");
@@ -93,23 +94,16 @@
     const pass = (lbl, ac) => `<label class="f"><span>${lbl}</span><input type="password" name="password" autocomplete="${ac}" required minlength="8"></label>`;
     let body = "";
     if (authView === "signin") body = f(email + pass("Password", "current-password"), "Sign in") +
-      `<div class="auth-links"><button type="button" class="btn link" data-av="magic">Email me a sign-in link</button>
-       <button type="button" class="btn link" data-av="forgot">Forgot password?</button></div>
-       <p class="auth-alt">New here? <button type="button" class="btn link" data-av="signup">Create your account</button></p>`;
-    if (authView === "signup") body = f(`<label class="f"><span>Full name</span><input type="text" name="name" autocomplete="name" required></label>` + email + pass("Choose a password (min. 8 characters)", "new-password"), "Create account") +
-      `<p class="auth-hint">Use the email HR has on file for you — your account then connects to your employee profile automatically.</p>
-       <p class="auth-alt">Already registered? <button type="button" class="btn link" data-av="signin">Sign in</button></p>`;
-    if (authView === "magic") body = f(email, "Send sign-in link") +
-      `<p class="auth-hint">We'll email you a one-time link. Open it on this device.</p>
-       <p class="auth-alt"><button type="button" class="btn link" data-av="code">I have a 6-digit code</button> · <button type="button" class="btn link" data-av="signin">Back to sign in</button></p>`;
-    if (authView === "code") body = f(email + `<label class="f"><span>6-digit code from the email</span><input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" required pattern="[0-9]{6}"></label>`, "Sign in") +
-      `<p class="auth-alt"><button type="button" class="btn link" data-av="signin">Back to sign in</button></p>`;
+      `<div class="auth-links auth-links-end"><button type="button" class="btn link" data-av="forgot">Forgot password?</button></div>
+       <p class="auth-alt">No account yet? HR sends you an invitation by email.</p>`;
     if (authView === "forgot") body = f(email, "Send reset link") +
       `<p class="auth-alt"><button type="button" class="btn link" data-av="signin">Back to sign in</button></p>`;
-    if (authView === "newpass") body = f(pass("New password (min. 8 characters)", "new-password"), "Save new password");
-    const titles = { signin: "Sign in", signup: "Create your account", magic: "Sign in with email link", code: "Enter your code", forgot: "Reset your password", newpass: "Set a new password" };
+    if (authView === "newpass" || authView === "welcome") body = f(pass("New password (min. 8 characters)", "new-password") +
+      `<label class="f"><span>Repeat the password</span><input type="password" name="password2" autocomplete="new-password" required minlength="8"></label>`, authView === "welcome" ? "Set password & sign in" : "Save new password") +
+      (authView === "welcome" ? `<p class="auth-hint">You'll use your work email and this password to sign in from now on.</p>` : "");
+    const titles = { signin: "Sign in", forgot: "Reset your password", newpass: "Set a new password", welcome: "Welcome! Set your password" };
     el.innerHTML = `<div class="auth-card" role="dialog" aria-labelledby="auth-t">
-      ${CFG.logo ? `<div class="auth-brand auth-logo"><img src="${esc(CFG.logo)}" alt="${esc(name)}"><small>${esc(CFG.tagline || "Human Resource Management")}</small></div>`
+      ${CFG.logo ? `<div class="auth-brand auth-logo"><img src="${esc(CFG.logo)}" alt="${esc(name)}"></div>`
         : `<div class="auth-brand"><span class="logo" aria-hidden="true">${esc(name.replace(/[^A-Za-z]/g, "").slice(0, 2).toUpperCase())}</span><div><b>${esc(name)}</b><small>${esc(CFG.tagline || "Human Resource Management")}</small></div></div>`}
       <h1 id="auth-t">${titles[authView]}</h1>
       ${authMsg ? `<div class="note ${/sent|check|saved|created/i.test(authMsg) ? "" : "warn"}" role="status"><div>${esc(authMsg)}</div></div>` : ""}
@@ -125,7 +119,8 @@
     if (/invalid login/i.test(m)) return "Email or password is incorrect.";
     if (/email not confirmed/i.test(m)) return "Confirm your email first — open the link we sent you, then sign in.";
     if (/rate limit|too many/i.test(m)) return "Too many attempts. Wait a few minutes and try again.";
-    if (/already registered|already been registered/i.test(m)) return "This email already has an account. Sign in instead, or reset your password.";
+    if (/same.*password|different from the old/i.test(m)) return "Choose a password you haven't used before.";
+    if (/session missing|expired|invalid.*token/i.test(m)) return "This link has expired or was already used. Ask HR to resend the invitation, or use “Forgot password?”.";
     if (/fetch|network/i.test(m)) return "Can't reach the server. Check your connection.";
     return m;
   };
@@ -144,30 +139,20 @@
     const btn = form.querySelector("button[type=submit]"); btn.disabled = true;
     try {
       const kind = form.dataset.auth;
-      if ((kind !== "newpass") && !/^\S+@\S+\.\S+$/.test(email)) throw { message: "Enter a valid email address." };
+      if (kind !== "newpass" && kind !== "welcome" && !/^\S+@\S+\.\S+$/.test(email)) throw { message: "Enter a valid email address." };
       if (kind === "signin") {
         const { error } = await sb.auth.signInWithPassword({ email, password: v.password });
-        if (error) throw error;
-      } else if (kind === "signup") {
-        if (String(v.password || "").length < 8) throw { message: "Use at least 8 characters for the password." };
-        const { data, error } = await sb.auth.signUp({ email, password: v.password, options: { data: { full_name: String(v.name || "").trim() }, emailRedirectTo: redirectTo() } });
-        if (error) throw error;
-        if (!data.session) { authView = "signin"; showAuth("Account created. Check your inbox and open the confirmation link, then sign in."); return; }
-      } else if (kind === "magic") {
-        const { error } = await sb.auth.signInWithOtp({ email, options: { shouldCreateUser: false, emailRedirectTo: redirectTo() } });
-        if (error) throw error;
-        showAuth("Link sent — check your inbox (and spam folder).");
-        return;
-      } else if (kind === "code") {
-        const { error } = await sb.auth.verifyOtp({ email, token: String(v.code || "").trim(), type: "email" });
         if (error) throw error;
       } else if (kind === "forgot") {
         const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: redirectTo() });
         if (error) throw error;
         authView = "signin"; showAuth("If that email has an account, a reset link was sent.");
         return;
-      } else if (kind === "newpass") {
+      } else if (kind === "newpass" || kind === "welcome") {
         if (String(v.password || "").length < 8) throw { message: "Use at least 8 characters for the password." };
+        if (v.password !== v.password2) throw { message: "The two passwords don't match." };
+        const { data: cur } = await sb.auth.getSession();
+        if (!cur.session) throw { message: "This link has expired or was already used. Ask HR to resend the invitation, or use “Forgot password?”." };
         const { error } = await sb.auth.updateUser({ password: v.password });
         if (error) throw error;
         authView = "signin"; history.replaceState(null, "", location.pathname);
@@ -431,6 +416,15 @@
     assetUrl,
     backend: "supabase",
     async signOut() { await sb.auth.signOut(); location.reload(); },
+    async invite(empId) {
+      const { data, error } = await sb.functions.invoke("send-email", { body: { action: "invite", empId } });
+      if (error) {
+        let detail = {}; try { detail = await error.context.json(); } catch (e) { /* no body */ }
+        const r = detail.error || error.message;
+        throw { message: r === "email_not_configured" ? "email isn't set up yet (SMTP secrets in Supabase)" : r === "not_allowed" ? "only HRD or Admin can invite" : r === "no_email" ? "add a real work email first" : String(r || "server error").replace(/_/g, " ") };
+      }
+      return data;
+    },
     async claim(empNo, name) { const { data, error } = await sb.rpc("hrm_claim", { emp_no: empNo, full_name: name }); if (error) throw mapErr(error); return data; },
     async downloadCloudBackup(path) {
       const { data, error } = await sb.storage.from("backups").download(path);
