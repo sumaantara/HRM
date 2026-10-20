@@ -405,7 +405,9 @@
   const mcp = {
     async callTool(server, tool, args) {
       if (server === "Gmail" && tool === "send_message") {
-        const { data, error } = await sb.functions.invoke("send-email", { body: { to: args.to, subject: args.subject, body: args.body } });
+        const pick = ["to", "subject", "body", "heading", "name", "intro", "rows", "quote", "tone", "cta"];
+        const payload = Object.fromEntries(pick.filter((k) => args[k] !== undefined && args[k] !== "").map((k) => [k, args[k]]));
+        const { data, error } = await sb.functions.invoke("send-email", { body: payload });
         if (error) {
           let status = error.context && error.context.status;
           throw { code: status === 503 ? "server_not_connected" : status === 403 ? "not_in_manifest" : "tool_error", message: error.message };

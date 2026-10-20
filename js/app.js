@@ -134,6 +134,8 @@ const who = (id, sub) => `<div class="who">${av(id)}<div><b>${esc(nm(id))}</b><s
 const canSeePrivate = target => { const t = emp(target), m = me(); if(!t || !m) return false; return m.admin || m.id === t.id || t.supervisorId === m.id || ["hrd","gm"].includes(m.role); };
 const LT = () => cfg().leaveTypes;
 const typeName = r => r.kind === "wfh" ? "Work From Home" : (LT()[r.type]?.name || r.type);
+const reqRows = r => [["Request", `${typeName(r)} · ${r.no}`], ["Employee", nm(r.empId)], ["Dates", rangeL(r.start, r.end)], ["Duration", `${r.days} day${r.days === 1 ? "" : "s"}`]]
+  .concat(r.location ? [["Location", r.location]] : []).concat(r.steps?.length > 1 ? [["Approval", r.steps.map((x, i) => `${i+1}. ${x.label} (${nm(x.approverId)})`).join("\n")]] : []);
 const unitOf = r => r.kind === "wfh" ? "work" : (LT()[r.type]?.unit || "work");
 const pendingFor = id => S.D.requests.filter(r => r.status === "pending" && r.steps[r.current]?.approverId === id);
 /* Leave quota = ledger of grants/adjustments on the employee profile (HRD only) minus approved & pending leave. */
@@ -217,9 +219,52 @@ async function run(fn, ok){
           c === "resource_exhausted" ? "Too many changes at once. Wait a moment and try again." : "Couldn't save. Check your connection and try again.");
     render(); return false; }
 }
-async function notify(to, title, body, view, ref){
+/* Notification catalogue: every event the HRM tells people about.
+   [label, who receives it, icon, tile colour, email on by default, group] — HRD switches emails per event in Settings → Notifications. */
+const NOTIFY = {
+  request_new:       ["Request waiting for approval", "First approver", "check", 1, true, "Leave & WFH"],
+  request_next:      ["Request moved to the next approver", "Next approver", "check", 1, true, "Leave & WFH"],
+  request_step:      ["An approval step was completed", "Employee who applied", "history", 1, false, "Leave & WFH"],
+  request_approved:  ["Request fully approved", "Employee who applied", "check", 5, true, "Leave & WFH"],
+  request_rejected:  ["Request rejected", "Employee who applied", "x", 6, true, "Leave & WFH"],
+  request_cancelled: ["Request cancelled by the employee", "Approver waiting on it", "x", 3, true, "Leave & WFH"],
+  review_task:       ["Performance review assigned", "Supervisor", "star", 4, true, "Performance"],
+  review_submitted:  ["Review submitted by a supervisor", "HRD who assigned it", "star", 4, false, "Performance"],
+  review_ready:      ["Review result available", "Employee reviewed", "star", 4, true, "Performance"],
+  announcement:      ["New or updated announcement", "All staff (when “notify” is ticked)", "mega", 2, true, "Company"],
+  reminder:          ["Reminder created", "People in the reminder's audience", "clock", 2, true, "Company"],
+  team_member:       ["New team member", "Their supervisor", "users", 5, true, "People"],
+  contract:          ["New contract or renewal", "Employee", "doc", 3, true, "People"],
+  quota:             ["Leave quota changed", "Employee", "cal", 1, true, "People"],
+  note:              ["New note on profile", "Employee", "file", 3, false, "People"],
+  account:           ["Account connected", "Employee", "shield", 5, false, "People"],
+};
+const LEGACY_NOTIF = {review_task:"onTask"};
+const emailOn = kind => { const n = cfg().notify || {}; if(kind in n) return !!n[kind]; const l = LEGACY_NOTIF[kind]; if(l && cfg().email && l in cfg().email) return !!cfg().email[l]; return !!(NOTIFY[kind] && NOTIFY[kind][4]); };
+const notifKind = n => n.kind && NOTIFY[n.kind] ? n.kind
+  : n.view === "approvals" ? "request_new" : n.view === "myrequests" ? (/rejected/i.test(n.title) ? "request_rejected" : /approved/i.test(n.title) ? "request_approved" : "request_step")
+  : n.view === "reviews" ? "review_task" : n.view === "announcements" ? "announcement" : /review/i.test(n.title || "") ? "review_ready"
+  : /quota/i.test(n.title || "") ? "quota" : /contract/i.test(n.title || "") ? "contract" : /team member/i.test(n.title || "") ? "team_member" : /reminder/i.test(n.title || "") ? "reminder" : "note";
+/* notify(to, title, body, view, ref, kind, mail)
+   mail = {subject, heading, intro, rows:[[label, value]], quote, tone, cta} — sent when the event's email is on and the person has an email */
+async function notify(to, title, body, view, ref, kind, mail){
   if(!to || !emp(to)) return;
-  await store.put("notifs", {id:uid("n"), to, title, body, view, ref:ref||null, at:new Date().toISOString(), read:false});
+  await store.put("notifs", {id:uid("n"), to, title, body, view, ref:ref||null, kind:kind||null, at:new Date().toISOString(), read:false});
+  if(mail && kind && emailOn(kind) && S.mode === "db") queueMail(to, Object.assign({subject:title, heading:title, intro:body, cta:{label:"Open in HRM", go:view, ref:ref||""}}, mail));
+}
+const mailQ = []; let mailBusy = false;
+function queueMail(to, m){ const e = emp(to); if(!e?.email || /@example\.com$/i.test(e.email) || e.status === "Resigned") return; mailQ.push([e, m]); if(!mailBusy) drainMail(); }
+async function drainMail(){
+  mailBusy = true; let fails = 0, reason = "";
+  while(mailQ.length){ const [e, m] = mailQ.shift(); const r = await sendRich(e, m); if(!r.ok){ fails++; reason = r.reason; } }
+  mailBusy = false; if(fails) toast(`${fails} email(s) couldn't be sent: ${reason}`);
+}
+async function sendRich(e, m){
+  if(!e?.email) return {ok:false, reason:"No email address on file."};
+  const mcp = await getMcp(); if(!mcp) return {ok:false, reason:"Email isn't available right now."};
+  try { await mcp.callTool("Gmail", "send_message", Object.assign({}, m, {to:[e.email], name:first(e.id), subject:"[HRM] " + String(m.subject || "").replace(/^\[HRM\]\s*/, "")})); return {ok:true}; }
+  catch(err){ const c = err && err.code;
+    return {ok:false, reason: c === "server_not_connected" ? "email isn't set up yet (SMTP in Supabase)" : c === "not_in_manifest" ? "not allowed for this recipient" : "the mail server didn't accept it"}; }
 }
 async function getMcp(){ if(S.mcp !== undefined) return S.mcp; try { S.mcp = window.claude?.use ? await window.claude.use("mcp") : null; } catch(e){ S.mcp = null; } return S.mcp; }
 async function sendEmail(to, subject, body){
@@ -244,7 +289,7 @@ const dv = (k, n, d) => (S.drafts[k] && n in S.drafts[k]) ? S.drafts[k][n] : d;
    rd/<uid>, ph/<uid>   per-person read receipts and self-uploaded profile photo
    audit/<uid>/m/<yyyy-mm>  each person's own monthly audit trail
    requests, notifs, counters   shared working data (Contributors write) */
-const APP_VERSION = "3.1.0", SCHEMA = 2;
+const APP_VERSION = "3.2.0", SCHEMA = 2;
 const PRIVATE_FIELDS = ["phone","gender","birthDate","exitReason","contract","contracts","notes","quotaLog"];
 const SUB_COLS = ["employees","private","requests","candidates","tasks","reviews","reminders","notifs","announcements","attendance","attImports","backups","dec","links","rd","ph","sub"];
 const CORE_COLS = ["employees","requests","tasks","notifs","announcements","attendance"];
@@ -451,7 +496,8 @@ async function approveLink(L, how){
   await putEmployee(Object.assign(clone(e), {userId:L.id}));
   await S.db.doc("links/" + L.id).set(Object.assign({}, L, {status:"approved", how, decidedBy:S.realEmpId || null, decidedAt:new Date().toISOString()}));
   audit("account_linked", e.empNo + " " + e.name, how);
-  await notify(e.id, "Your account is connected", `You can now use the HRM as ${e.name}.`, "dashboard", null);
+  await notify(e.id, "Your account is connected", `You can now use the HRM as ${e.name}.`, "dashboard", null, "account",
+    {intro:`Your sign-in is now connected to your employee profile. From now on you can submit leave and WFH requests, see your leave balance and follow your approvals in the HRM.`, tone:"ok"});
 }
 async function ingest(){
   const done = Object.assign({}, S.R.ingest?.done || {}); let changed = false;
@@ -485,8 +531,10 @@ async function ingestReview(who, it, key){
   }
   const t = clone(t0); if(!t.done.includes(it.empId)) t.done.push(it.empId); if(t.done.length >= t.memberIds.length) t.status = "done";
   await withRetry(() => S.db.collection("tasks").doc(t.id).set(t)); localPut("tasks", t);
-  await notify(t.createdBy, `Review submitted: ${nm(it.empId)}`, `${t.period} · by ${who.name}`, "reviews", t.id);
-  await notify(it.empId, `Your ${t.period} performance review is available`, `Reviewed by ${who.name}`, "profile", it.empId);
+  await notify(t.createdBy, `Review submitted: ${nm(it.empId)}`, `${t.period} · by ${who.name}`, "reviews", t.id, "review_submitted",
+    {intro:`${who.name} submitted the ${t.period} performance review for ${nm(it.empId)}.`, rows:[["Task", t.title], ["Progress", `${t.done.length} of ${t.memberIds.length} reviewed`]]});
+  await notify(it.empId, `Your ${t.period} performance review is available`, `Reviewed by ${who.name}`, "profile", it.empId, "review_ready",
+    {intro:`Your ${t.period} performance review by ${who.name} is ready. You can read the scores and feedback on your profile under Performance.`, rows:[["Period", t.period], ["Reviewer", who.name]], cta:{label:"Read my review", go:"profile", ref:it.empId}});
   return [true, ""];
 }
 async function ingestNote(who, it, key){
@@ -496,7 +544,8 @@ async function ingestNote(who, it, key){
   if((target.notes || []).some(n => n.id === "n" + key)) return [true, ""];
   const e = clone(target); e.notes = (e.notes || []).concat([{id:"n" + key, date:it.date || today(), kind:it.noteKind || "Note", by:who.id, text:String(it.text || "").slice(0, 4000)}]);
   await putEmployee(e);
-  await notify(e.id, `New ${(it.noteKind || "note").toLowerCase()} note on your profile`, `Added by ${who.name}`, "profile", e.id);
+  await notify(e.id, `New ${(it.noteKind || "note").toLowerCase()} note on your profile`, `Added by ${who.name}`, "profile", e.id, "note",
+    {intro:`${who.name} added a ${(it.noteKind || "note").toLowerCase()} entry to your history.`, quote:it.text || "", cta:{label:"View my history", go:"profile", ref:e.id}});
   return [true, ""];
 }
 
@@ -681,6 +730,19 @@ function notifList(){
   const due = remindersFor(me()).filter(r => diffDays(today(), r.date) <= 7).map(r => ({id:"rem-"+r.id, rem:true, title:r.title, body:`${REM_TYPES[r.type]||"Reminder"} · ${diffDays(today(), r.date) < 0 ? "overdue since " : ""}${fmt(r.date)}`, view: isMgmt() ? "reminders" : (r.empId ? "profile" : "dashboard"), ref:r.empId, at:r.date, read:true}));
   return {own, due, unread: own.filter(n => !n.read).length + due.length};
 }
+function notifItem(n){
+  const k = n.rem ? "reminder" : notifKind(n), d = NOTIFY[k];
+  return `<button class="ni ${n.read?"":"unread"}" type="button" data-act="open-notif" data-id="${esc(n.id)}">
+    <span class="tile c${d[3]} ni-ic">${ic(d[2])}</span>
+    <span class="ni-t"><b>${esc(n.title)}</b><span class="ni-b">${esc(n.body)}</span><span class="ni-m">${esc(n.rem ? "Upcoming reminder" : d[5])} · ${n.rem ? esc(fmt(n.at)) : ago(n.at)}</span></span>
+    ${n.read ? "" : `<span class="ni-dot" aria-label="Unread"></span>`}</button>`;
+}
+function notifPanel(nl){
+  const all = nl.own.slice(0, 40); if(!all.length && !nl.due.length) return `<div class="empty ni-empty">${ic("bell")}<b>You're all caught up</b><span>New approvals, reviews and announcements show up here.</span></div>`;
+  const fresh = all.filter(n => !n.read), old = all.filter(n => n.read);
+  const sec = (label, list) => list.length ? `<div class="ni-sec">${label}</div>` + list.map(notifItem).join("") : "";
+  return sec("Coming up", nl.due) + sec("New", fresh) + sec("Earlier", old);
+}
 function renderTop(){
   const m = me(), nl = notifList(), dark = document.documentElement.dataset.theme === "dark" || (!document.documentElement.dataset.theme && matchMedia("(prefers-color-scheme: dark)").matches);
   const people = [...S.D.employees].sort((a,b) => (b.admin?1:0) - (a.admin?1:0) || Object.keys(ROLES).indexOf(b.role) - Object.keys(ROLES).indexOf(a.role) || a.name.localeCompare(b.name));
@@ -693,10 +755,8 @@ function renderTop(){
     <button class="ib plain search-toggle" type="button" data-act="search-toggle" aria-label="Search">${ic("search")}</button>
     <button class="ib plain" type="button" data-act="theme" aria-label="Switch to ${dark?"light":"dark"} mode">${ic(dark?"sun":"moon")}</button>
     <div class="anchor"><button class="ib plain" type="button" data-act="pop" data-v="bell" aria-label="Notifications" aria-expanded="${S.pop==="bell"}">${ic("bell")}${nl.unread?`<span class="dot">${nl.unread>9?"9+":nl.unread}</span>`:""}</button>
-      ${S.pop === "bell" ? `<div class="pop" role="dialog" aria-label="Notifications"><div class="pop-h"><h3>Notifications</h3>${nl.own.some(n=>!n.read)?`<button class="btn link small" type="button" data-act="read-all">Mark all as read</button>`:""}</div>
-        <div class="pop-b">${nl.due.concat(nl.own).length ? nl.due.concat(nl.own).slice(0,30).map(n => `<button class="ni ${n.read?"":"unread"}" type="button" data-act="open-notif" data-id="${esc(n.id)}">
-          <span class="tile c${n.rem?2:1}" style="width:34px;height:34px;border-radius:9px">${ic(n.rem?"clock":"bell")}</span><span style="min-width:0"><b>${esc(n.title)}</b><span>${esc(n.body)}</span><br><span>${n.rem?"Reminder":ago(n.at)}</span></span></button>`).join("")
-          : `<div class="empty">You're all caught up.</div>`}</div></div>` : ""}</div>
+      ${S.pop === "bell" ? `<div class="pop pop-n" role="dialog" aria-label="Notifications"><div class="pop-h"><h3>Notifications</h3>${nl.own.some(n=>!n.read)?`<button class="btn link small" type="button" data-act="read-all">Mark all as read</button>`:""}</div>
+        <div class="pop-b">${notifPanel(nl)}</div>${isHR() ? `<div class="pop-f"><button class="btn link small" type="button" data-act="notif-settings">${ic("cog")}Notification settings</button></div>` : ""}</div>` : ""}</div>
     <div class="anchor"><button class="me-btn" type="button" data-act="pop" data-v="user" aria-expanded="${S.pop==="user"}">${m?av(m.id):""}<span class="nm">${esc(m?.name||"—")}<small>${m?.admin ? "Admin" : esc(jobOf(m)) + (m?.role==="hrd"?" · HRD":"")}</small></span>${ic("down")}</button>
       ${S.pop === "user" ? userMenu(people) : ""}</div>`;
 }
@@ -1040,11 +1100,11 @@ async function submitApply(){
     reason:f.reason.trim(), doc:!!f.doc, location:f.location||"", status:"pending", current:0, steps, createdAt:now, updatedAt:now};
   const ok = await run(async () => {
     await store.put("requests", r);
-    await notify(steps[0].approverId, `${typeName(r)} needs your approval`, `${nm(S.me)} · ${range(r.start,r.end)} · ${r.days} day(s)`, "approvals", r.id);
+    await notify(steps[0].approverId, `${typeName(r)} needs your approval`, `${nm(S.me)} · ${range(r.start,r.end)} · ${r.days} day(s)`, "approvals", r.id, "request_new",
+      {subject:`${typeName(r)} request from ${nm(S.me)}`, heading:`${typeName(r)} request needs your approval`, intro:`${nm(S.me)} submitted a request and you're the ${steps.length > 1 ? "first of " + steps.length + " approvers" : "approver"}.`, rows:reqRows(r), quote:r.reason, cta:{label:"Review request", go:"approvals", ref:r.id}});
     audit("request_submitted", r.no, `${typeName(r)} ${r.start}..${r.end} for ${nm(r.empId)}`);
   }, `${r.no} sent to ${nm(steps[0].approverId)}.`);
   if(!ok) return;
-  if(cfg().email?.onRequest){ const a = emp(steps[0].approverId); sendEmail(a?.email, `[HRM] ${typeName(r)} request from ${nm(S.me)}`, `Hi ${first(a.id)},\n\n${nm(S.me)} submitted a ${typeName(r)} request for ${rangeL(r.start,r.end)} (${r.days} day(s)).\nReason: ${r.reason}\n\nPlease review it in the HRM app under Pending Approvals.\n`); }
   S.drafts.apply = {kind:f.kind}; S.ui.applyTried = false; go("myrequests");
 }
 
@@ -1096,20 +1156,26 @@ async function decide(id, approve){
   if(!approve && !note){ S.ui["err-"+id] = "Write the reason for rejecting so the employee knows what to change."; render(); document.getElementById("note-"+id)?.focus(); return; }
   const idx = r0.current, now = new Date().toISOString(); s.status = approve ? "approved" : "rejected"; s.note = note; s.at = now; r.updatedAt = now;
   let msg, n = [];
+  const mine = {cta:{label:"View my request", go:"myrequests", ref:r.id}};
   if(!approve){ r.status = "rejected"; r.steps.forEach((x,i) => { if(i > r.current) x.status = "skipped"; }); msg = `${r.no} rejected.`;
-    n.push([r.empId, `Your ${typeName(r)} was rejected`, `${nm(S.me)}: “${note}”`]); }
+    n.push([r.empId, `Your ${typeName(r)} was rejected`, `${nm(S.me)}: “${note}”`, "request_rejected",
+      Object.assign({heading:`Your ${typeName(r)} request was not approved`, intro:`${nm(S.me)} rejected your request. Their note explains what to change — you can submit a new request any time.`, rows:reqRows(r), quote:note, tone:"bad"}, mine)]); }
   else if(r.current >= r.steps.length - 1){ r.status = "approved"; msg = `${r.no} fully approved.`;
-    n.push([r.empId, `Your ${typeName(r)} is approved`, `${range(r.start,r.end)} · final approval by ${nm(S.me)}`]); }
+    n.push([r.empId, `Your ${typeName(r)} is approved`, `${range(r.start,r.end)} · final approval by ${nm(S.me)}`, "request_approved",
+      Object.assign({heading:`Your ${typeName(r)} is approved`, intro:`Good news — your request is fully approved${r.steps.length > 1 ? ` (all ${r.steps.length} steps)` : ""}. Final approval by ${nm(S.me)}.`, rows:reqRows(r), quote:note, tone:"ok"}, mine)]); }
   else { r.current++; const nx = r.steps[r.current].approverId; msg = `Approved. Sent to ${nm(nx)} (step ${r.current+1} of ${r.steps.length}).`;
-    n.push([nx, `${typeName(r)} needs your approval`, `${nm(r.empId)} · ${range(r.start,r.end)} · step ${r.current+1} of ${r.steps.length}`]);
-    n.push([r.empId, `Step ${r.current} approved by ${nm(S.me)}`, `Your ${typeName(r)} moved to ${nm(nx)}`]); }
+    n.push([nx, `${typeName(r)} needs your approval`, `${nm(r.empId)} · ${range(r.start,r.end)} · step ${r.current+1} of ${r.steps.length}`, "request_next",
+      {subject:`${typeName(r)} request from ${nm(r.empId)} — step ${r.current+1} of ${r.steps.length}`, heading:`${typeName(r)} request needs your approval`, intro:`${nm(S.me)} approved step ${r.current} and the request now waits for you (step ${r.current+1} of ${r.steps.length}).`, rows:reqRows(r), quote:r.reason, cta:{label:"Review request", go:"approvals", ref:r.id}}]);
+    n.push([r.empId, `Step ${r.current} approved by ${nm(S.me)}`, `Your ${typeName(r)} moved to ${nm(nx)}`, "request_step",
+      Object.assign({heading:`Step ${r.current} of ${r.steps.length} approved`, intro:`${nm(S.me)} approved your request. It now waits for ${nm(nx)}.`, rows:reqRows(r)}, mine)]); }
   delete S.drafts["dec-"+id]; delete S.ui["err-"+id];
-  await run(async () => { await store.put("requests", r); await signDecision(r.id, idx, approve ? "a" : "r"); for(const [to,t,b] of n) await notify(to, t, b, to === r.empId ? "myrequests" : "approvals", r.id); audit(approve ? "request_approved" : "request_rejected", r.no, `step ${idx+1}${note ? " — " + note : ""}`); }, msg);
+  await run(async () => { await store.put("requests", r); await signDecision(r.id, idx, approve ? "a" : "r"); for(const [to,t,b,kd,ml] of n) await notify(to, t, b, to === r.empId ? "myrequests" : "approvals", r.id, kd, ml); audit(approve ? "request_approved" : "request_rejected", r.no, `step ${idx+1}${note ? " — " + note : ""}`); }, msg);
 }
 async function cancelReq(id){
   const r0 = S.D.requests.find(x => x.id === id); if(!r0 || r0.empId !== S.me || r0.status !== "pending") return;
   const r = clone(r0); r.status = "cancelled"; r.updatedAt = new Date().toISOString(); delete S.ui["cx-"+id];
-  await run(async () => { await store.put("requests", r); await notify(r.steps[r.current].approverId, `${nm(S.me)} cancelled a request`, `${typeName(r)} · ${range(r.start,r.end)}`, "myrequests", r.id); audit("request_cancelled", r.no, ""); }, `${r.no} cancelled.`);
+  await run(async () => { await store.put("requests", r); await notify(r.steps[r.current].approverId, `${nm(S.me)} cancelled a request`, `${typeName(r)} · ${range(r.start,r.end)}`, "approvals", r.id, "request_cancelled",
+    {heading:`${nm(S.me)} cancelled a ${typeName(r)} request`, intro:`The request that was waiting for your approval has been cancelled. No action is needed.`, rows:reqRows(r), tone:"warn", cta:{label:"Open approvals", go:"approvals", ref:""}}); audit("request_cancelled", r.no, ""); }, `${r.no} cancelled.`);
 }
 
 /* ---------- approvals ---------- */
@@ -1273,7 +1339,8 @@ async function saveQuota(){
   if(!delta){ S.ui.qErr = "This doesn't change the balance."; renderModal(); return; }
   const e = clone(e0); e.quotaLog = (e.quotaLog||[]).concat([{id:uid("g"), date:today(), type, delta, reason, by:S.me}]);
   S.ui.qErr = ""; S.modal = null; delete S.drafts[k];
-  await run(async () => { await store.put("employees", e); audit("quota_adjusted", `${e.empNo} ${e.name}`, `${LT()[type].name} ${delta>0?"+":""}${delta} — ${reason}`); await notify(e.id, `Your ${LT()[type].name} quota changed (${delta>0?"+":""}${delta})`, `${reason} · by ${nm(S.me)}`, "profile", e.id); }, `${LT()[type].name} quota updated for ${e.name}.`);
+  await run(async () => { await store.put("employees", e); audit("quota_adjusted", `${e.empNo} ${e.name}`, `${LT()[type].name} ${delta>0?"+":""}${delta} — ${reason}`); await notify(e.id, `Your ${LT()[type].name} quota changed (${delta>0?"+":""}${delta})`, `${reason} · by ${nm(S.me)}`, "profile", e.id, "quota",
+    {heading:`Your ${LT()[type].name} balance was updated`, intro:`HR adjusted your leave quota.`, rows:[["Leave type", LT()[type].name], ["Change", `${delta>0?"+":""}${delta} day(s)`], ["Available now", `${balance(e.id, type).avail} day(s)`], ["Reason", reason], ["By", nm(S.me)]], cta:{label:"See my leave balance", go:"profile", ref:e.id}}); }, `${LT()[type].name} quota updated for ${e.name}.`);
 }
 function pPerformance(e){
   const list = S.D.reviews.filter(r => r.empId === e.id).sort((a,b) => b.submittedAt.localeCompare(a.submittedAt));
@@ -1338,10 +1405,12 @@ async function saveTask(){
   if(!members.length){ S.ui.taskErr = "Select at least one team member to review."; render(); return; }
   const wantEmail = dv(k,"email", !!cfg().email?.onTask), s = emp(sid);
   S.ui.taskErr = ""; S.modal = null; delete S.drafts[k];
-  const ok = await run(async () => { await store.put("tasks", t); audit("review_task_assigned", t.title, nm(sid)); await notify(sid, `New review task: ${t.title}`, `Assigned by ${nm(S.me)} · ${members.length} member(s) · due ${fmt(t.due)}`, "reviews", t.id); }, wantEmail ? "Task assigned. Sending email…" : `Task assigned to ${nm(sid)}.`);
+  const ok = await run(async () => { await store.put("tasks", t); audit("review_task_assigned", t.title, nm(sid)); await notify(sid, `New review task: ${t.title}`, `Assigned by ${nm(S.me)} · ${members.length} member(s) · due ${fmt(t.due)}`, "reviews", t.id, "review_task"); }, wantEmail ? "Task assigned. Sending email…" : `Task assigned to ${nm(sid)}.`);
   if(!ok || !wantEmail) return;
-  const res = await sendEmail(s?.email, `[HRM] Performance review task: ${t.title}`,
-    `Hi ${first(sid)},\n\n${nm(S.me)} (HRD) has assigned you a performance review task.\n\nTask: ${t.title}\nPeriod: ${t.period}\nTeam members: ${members.map(nm).join(", ")}\nDue date: ${fmt(t.due)}\n${t.message ? `\nMessage: ${t.message}\n` : ""}\nPlease open the HRM app → Performance Reviews to complete it.\n\nThank you.`);
+  const res = await sendRich(s, {subject:`Performance review task: ${t.title}`, heading:"You have a performance review to complete",
+    intro:`${nm(S.me)} (HRD) assigned you a performance review. Please score each team member and add your feedback before the due date.`,
+    rows:[["Task", t.title], ["Period", t.period], ["Team members", members.map(nm).join(", ")], ["Due date", fmt(t.due)]], quote:t.message || "", tone:"info",
+    cta:{label:"Start the review", go:"reviews", ref:t.id}});
   const t2 = Object.assign(clone(t), {email: res.ok ? "sent" : "failed"});
   await run(() => store.put("tasks", t2), res.ok ? `Email sent to ${s.email}.` : `Task saved, but the email wasn't sent: ${res.reason}`);
 }
@@ -1377,8 +1446,10 @@ async function saveReview(){
   if(dbOn() && !S.canEdit){ await run(() => submitItem("review", {taskId:t0.id, empId:e.id, scores, overall, recommendation:rv.recommendation, strengths:rv.strengths, improvements:rv.improvements, goals:rv.goals}), `Review for ${e.name} submitted. It appears on the profile as soon as HR's app processes it.`); return; }
   await run(async () => {
     await store.put("reviews", rv); await store.put("tasks", t); audit("review_submitted", e.name, t.title);
-    await notify(t.createdBy, `Review submitted: ${e.name}`, `${t.period} · by ${nm(S.me)}`, "reviews", t.id);
-    await notify(e.id, `Your ${t.period} performance review is available`, `Reviewed by ${nm(S.me)}`, "profile", e.id);
+    await notify(t.createdBy, `Review submitted: ${e.name}`, `${t.period} · by ${nm(S.me)}`, "reviews", t.id, "review_submitted",
+      {intro:`${nm(S.me)} submitted the ${t.period} performance review for ${e.name}.`, rows:[["Task", t.title], ["Overall score", String(rv.overall)], ["Progress", `${t.done.length} of ${t.memberIds.length} reviewed`]]});
+    await notify(e.id, `Your ${t.period} performance review is available`, `Reviewed by ${nm(S.me)}`, "profile", e.id, "review_ready",
+      {intro:`Your ${t.period} performance review by ${nm(S.me)} is ready. You can read the scores and feedback on your profile under Performance.`, rows:[["Period", t.period], ["Reviewer", nm(S.me)]], cta:{label:"Read my review", go:"profile", ref:e.id}});
   }, `Review for ${e.name} submitted.`);
 }
 
@@ -1907,7 +1978,8 @@ async function saveAnn(){
   S.ui.annErr = ""; S.modal = null; delete S.drafts[k];
   await run(async () => {
     await store.put("announcements", a); audit(a0 ? "announcement_updated" : "announcement_published", a.title, "");
-    if(send) for(const e of activeE()) if(e.id !== S.me) await notify(e.id, `${a0 ? "Updated" : "New"} announcement: ${a.title}`, `${annCat(a)[0]} · from ${nm(S.me)}`, "announcements", a.id);
+    if(send) for(const e of activeE()) if(e.id !== S.me) await notify(e.id, `${a0 ? "Updated" : "New"} announcement: ${a.title}`, `${annCat(a)[0]} · from ${nm(S.me)}`, "announcements", a.id, "announcement",
+      {subject:`${a0 ? "Updated announcement" : "Announcement"}: ${a.title}`, heading:a.title, intro:`${a0 ? "An announcement was updated" : "New announcement"} from ${nm(S.me)} · ${annCat(a)[0]}${a.expires ? ` · visible until ${fmt(a.expires)}` : ""}.`, quote:String(a.body || "").slice(0, 1800), cta:{label:"Read in HRM", go:"announcements", ref:a.id}});
   }, a0 ? "Announcement updated." : send ? `Announcement published to ${activeE().length} employees.` : "Announcement published.");
   go("announcements");
 }
@@ -2019,7 +2091,8 @@ async function saveEmp(){
     await store.put("employees", e);
     audit(e0 ? "employee_updated" : fromCand ? "employee_hired" : "employee_created", `${e.empNo} ${e.name}`, e0 ? "changed: " + changed.join(", ") : "");
     if(fromCand){ const c = clone(fromCand); c.stage = "hired"; c.employeeId = e.id; await store.put("candidates", c); }
-    if(!e0 && e.supervisorId) await notify(e.supervisorId, `New team member: ${e.name}`, `${e.position} · starts ${fmt(e.joinDate)}`, "profile", e.id);
+    if(!e0 && e.supervisorId) await notify(e.supervisorId, `New team member: ${e.name}`, `${e.position} · starts ${fmt(e.joinDate)}`, "profile", e.id, "team_member",
+      {heading:`${e.name} is joining your team`, intro:`${e.name} was added to the HRM with you as their direct supervisor.`, rows:[["Position", e.position || "—"], ["Department", e.dept || "—"], ["Office", e.office || "—"], ["Start date", fmt(e.joinDate)]], tone:"ok", cta:{label:"View profile", go:"profile", ref:e.id}});
   }, fromCand ? `${e.name} hired as ${e.empNo}.` : `${e.name} saved.`);
   if(!e0) go("profile", {id:e.id});
 }
@@ -2051,7 +2124,8 @@ async function saveContract(){
   e.quotaLog = (e.quotaLog||[]).concat(g);
   e.notes = (e.notes||[]).concat([{id:uid("n"), date:today(), kind:"Contract", by:S.me, text:`New ${type} contract${c.no?" "+c.no:""}: ${fmt(c.start)}${c.end?" – "+fmt(c.end):" (permanent)"}.${g.length ? " Leave quota added: " + g.map(x => `${LT()[x.type].name} +${x.delta}`).join(", ") + "." : ""}`}]);
   S.modal = null; delete S.drafts[k];
-  await run(async () => { await store.put("employees", e); audit("contract_added", `${e.empNo} ${e.name}`, `${type} ${c.start}..${c.end || "permanent"}${g.length ? " · quota +" + g.map(x => x.type + " " + x.delta).join(", ") : ""}`); await notify(e.id, "Your contract was updated", `${type}${c.end ? " until "+fmt(c.end) : " (permanent)"}${g.length ? " · leave quota added" : ""}`, "profile", e.id); }, g.length ? "Contract saved and leave quota added." : "Contract saved.");
+  await run(async () => { await store.put("employees", e); audit("contract_added", `${e.empNo} ${e.name}`, `${type} ${c.start}..${c.end || "permanent"}${g.length ? " · quota +" + g.map(x => x.type + " " + x.delta).join(", ") : ""}`); await notify(e.id, "Your contract was updated", `${type}${c.end ? " until "+fmt(c.end) : " (permanent)"}${g.length ? " · leave quota added" : ""}`, "profile", e.id, "contract",
+    {heading:"Your contract was updated", intro:`HR recorded a ${e.contracts.length > 1 ? "contract renewal" : "new contract"} on your profile.`, rows:[["Type", type], ["Contract no.", c.no || "—"], ["Start", fmt(c.start)], ["End", c.end ? fmt(c.end) : "Permanent"]].concat(g.length ? [["Leave quota added", g.map(x => `${LT()[x.type].name} +${x.delta}`).join(", ")]] : []), cta:{label:"View my contract", go:"profile", ref:e.id}}); }, g.length ? "Contract saved and leave quota added." : "Contract saved.");
 }
 
 /* ---------- reminders ---------- */
@@ -2093,14 +2167,17 @@ async function saveRem(){
     await store.put("reminders", r); audit("reminder_added", r.title, r.date);
     const targets = new Set(); if(r.empId && r.audience.includes("employee")) targets.add(r.empId);
     if(r.empId && r.audience.includes("supervisor") && emp(r.empId)?.supervisorId) targets.add(emp(r.empId).supervisorId);
-    for(const to of targets) if(to !== S.me) await notify(to, `Reminder: ${r.title}`, fmt(r.date), "dashboard", null);
+    if(r.audience.includes("all")) activeE().forEach(e => targets.add(e.id));
+    if(r.audience.includes("hrd")) activeE().filter(e => e.role === "hrd").forEach(e => targets.add(e.id));
+    for(const to of targets) if(to !== S.me) await notify(to, `Reminder: ${r.title}`, `${REM_TYPES[r.type] || "Reminder"} · ${fmt(r.date)}`, "dashboard", null, "reminder",
+      {heading:r.title, intro:`${nm(S.me)} added a ${String(REM_TYPES[r.type] || "reminder").toLowerCase()} for ${fmt(r.date)}${r.empId && r.empId !== to ? ` about ${nm(r.empId)}` : ""}.`, rows:[["Date", fmt(r.date)], ["Type", REM_TYPES[r.type] || "Reminder"]], quote:r.note || "", tone:"warn", cta:{label:"Open HRM", go:"dashboard", ref:""}});
   }, "Reminder saved.");
 }
 
 /* ---------- settings ---------- */
 function vSettings(){
   const tabs = [["types","Leave Types","hr"],["rules","Leave & Contract Rules","hr"],["holidays","Holidays","hr"],["attendance","Attendance","hr"],["criteria","Review Criteria","hr"],
-    ["flows","Approval Flows","admin"],["org","Organization","admin"],["company","Company","admin"],["notif","Notifications","admin"]];
+    ["flows","Approval Flows","admin"],["org","Organization","admin"],["company","Company","admin"],["notif","Notifications","hr"]];
   if(!tabs.some(t => t[0] === S.ui.stab)) S.ui.stab = "types";
   const tab = S.ui.stab, owner = tabs.find(t => t[0] === tab)[2], ro = owner === "admin" ? !isAdmin() : !isHR(), roS = !isAdmin(), roQ = !isHR();
   let body = "";
@@ -2143,7 +2220,7 @@ function vSettings(){
     const matrix = [["View own profile, apply leave & WFH", Y,Y,Y,Y,Y],["Approve team requests, write team reviews", N,Y,Y,Y,Y],["Company-wide view of all employees", N,N,Y,Y,Y],
       ["Employees, contracts, leave quotas, import", N,N,N,Y,Y],["Recruitment, attendance upload, reminders, announcements, review tasks", N,N,N,Y,Y],
       ["Leave quotas & rules, holidays, attendance hours, review criteria", N,N,N,Y,Y],["Approval flows, organization, job levels & access types", N,N,N,N,Y],
-      ["Company branding, email notifications", N,N,N,N,Y],["Grant HRD / Admin access, remove sample data", N,N,N,N,Y]];
+      ["Company branding", N,N,N,N,Y],["Which events send email (Settings → Notifications)", N,N,N,Y,Y],["Grant HRD / Admin access, remove sample data", N,N,N,N,Y]];
     body = `<div class="card-b stack"><h3 class="sub" style="margin:0">Who can do what</h3>
       <div class="tw" style="border:1px solid var(--line);border-radius:10px"><table class="t"><thead><tr><th>Permission</th><th>Staff</th><th>Supervisor / Manager</th><th>General Manager</th><th>HRD</th><th>Admin</th></tr></thead><tbody>
         ${matrix.map(r => `<tr><td style="white-space:normal">${r[0]}</td>${r.slice(1).map(x => `<td>${x}</td>`).join("")}</tr>`).join("")}</tbody></table></div>
@@ -2174,10 +2251,15 @@ function vSettings(){
         <label class="f"><span>Grace period (minutes)</span><input type="number" min="0" max="120" data-cfg="schedule.grace" value="${Number(sc.grace)||0}" ${ro?"disabled":""}><small>Check-ins within this many minutes after start aren't counted as late.</small></label></div>
       <fieldset style="border:0;padding:0;margin:0"><legend style="font-size:.8rem;font-weight:600;color:var(--ink2);margin-bottom:8px">Working days</legend><div class="row">${[1,2,3,4,5,6,0].map(w => `<label class="chk"><input type="checkbox" data-wd="${w}" ${(sc.workdays||[]).includes(w)?"checked":""} ${ro?"disabled":""}><span>${DOWL[w]}</span></label>`).join("")}</div></fieldset></div>`;
   } else if(tab === "notif"){
-    body = `<div class="card-b stack"><p class="muted">In-app notifications are always on. Emails are sent by the HRM's mail server (SMTP settings of the Supabase project), only to addresses of employees in the directory.</p>
-      <label class="chk"><input type="checkbox" data-cfg="email.onTask" ${cfg().email?.onTask?"checked":""} ${ro?"disabled":""}><span><b>Email supervisors when a review task is assigned</b><br><span class="muted small">Can be turned off per task when assigning.</span></span></label>
-      <label class="chk"><input type="checkbox" data-cfg="email.onRequest" ${cfg().email?.onRequest?"checked":""} ${ro?"disabled":""}><span><b>Email the first approver when a request is submitted</b><br><span class="muted small">Sent from the employee's own Gmail, if connected.</span></span></label>
-      <div class="note warn">${ic("alert")}<div>Sample employees use @example.com addresses. Update each employee's work email before relying on email notifications.</div></div></div>`;
+    const groups = [...new Set(Object.values(NOTIFY).map(d => d[5]))], noMail = activeE().filter(e => !e.system && (!e.email || /@example\.com$/i.test(e.email)));
+    body = `<div class="card-b stack"><p class="muted">Every event below always appears in the person's notification bell. Tick <b>Email</b> to also send it to their work email — sent by the HRM's mail server, only to employees in the directory, with a button that opens the right page.</p>
+      ${noMail.length ? `<div class="note warn">${ic("alert")}<div><b>${noMail.length} active employee${noMail.length === 1 ? "" : "s"} without a real work email</b> (${esc(noMail.slice(0, 4).map(e => e.name).join(", "))}${noMail.length > 4 ? "…" : ""}) won't receive emails. Add the email on their profile.</div></div>` : `<div class="note">${ic("check")}<div>Every active employee has a work email on file.</div></div>`}
+      <div class="row"><button class="btn" type="button" data-act="mail-test">${ic("mail")}Send a test email to me</button><span class="small muted">${esc(me()?.email || "No email on your profile")}</span></div></div>
+    ${groups.map(g => `<div class="card-h" style="border-top:1px solid var(--line)"><h2>${esc(g)}</h2></div>
+      <div class="tw"><table class="t rt nt-t"><thead><tr><th>Event</th><th>Sent to</th><th class="c">In-app</th><th class="c">Email</th></tr></thead><tbody>
+      ${Object.entries(NOTIFY).filter(([, d]) => d[5] === g).map(([k, d]) => `<tr><td data-l="Event"><span class="nt-ev"><span class="tile c${d[3]}">${ic(d[2])}</span><b>${esc(d[0])}</b></span></td>
+        <td data-l="Sent to" class="muted">${esc(d[1])}</td><td data-l="In-app" class="c">${ic("check")}</td>
+        <td data-l="Email" class="c"><label class="sw"><input type="checkbox" data-cfg="notify.${k}" ${emailOn(k) ? "checked" : ""} ${ro ? "disabled" : ""} aria-label="Email for ${esc(d[0])}"><span></span></label></td></tr>`).join("")}</tbody></table></div>`).join("")}`;
   } else {
     const cr = cfg().criteria || [];
     body = `<div class="card-b"><p class="muted">Supervisors score each criterion from 1 to 5. Changing criteria affects new reviews only.</p></div>
@@ -2685,10 +2767,14 @@ document.addEventListener("click", async ev => {
     case "open-notif": { S.pop = null; const n = S.D.notifs.find(x => x.id === id);
       if(n && !n.read) run(() => store.put("notifs", Object.assign(clone(n), {read:true})));
       const item = n || notifList().due.find(x => x.id === id); if(!item) return render();
-      if(item.view === "profile" && item.ref) return go("profile", {id:item.ref, tab: n?.title?.includes("review") ? "performance" : undefined});
+      if(item.view === "profile" && item.ref){ const kd = n ? notifKind(n) : ""; return go("profile", {id:item.ref, tab: kd === "review_ready" ? "performance" : kd === "contract" ? "contract" : kd === "quota" ? "leave" : kd === "note" ? "history" : undefined}); }
       if(item.view === "announcements" && item.ref){ S.ui["ann-"+item.ref] = true; go("announcements"); markAnnRead([item.ref]); return; }
       if(["approvals","myrequests"].includes(item.view) && item.ref && S.D.requests.some(r => r.id === item.ref)){ go(item.view === "approvals" && isLead() ? "approvals" : "myrequests"); S.modal = {kind:"req", id:item.ref}; return renderModal(); }
       return go(item.view || "dashboard"); }
+    case "mail-test": { const m0 = me(); if(!m0?.email){ toast("Add your email to your profile first."); return; }
+      const r = await sendRich(m0, {subject:"Test email", heading:"Email notifications are working", intro:"This is a test from the ONEderland HRM. If you can read this, approvals, reviews, announcements and reminders will reach people by email too.", rows:[["Sent by", nm(m0.id)], ["Time", new Date().toLocaleString()]], tone:"ok", cta:{label:"Open HRM", go:"dashboard", ref:""}});
+      toast(r.ok ? `Test email sent to ${m0.email}.` : `Not sent: ${r.reason}.`); return; }
+    case "notif-settings": S.pop = null; S.ui.stab = "notif"; return go("settings");
     case "open-req": S.pop = null; S.modal = {kind:"req", id}; renderTop(); renderModal(); return;
     case "open-emp": S.modal = null; S.q = ""; return go("profile", {id, tab:b.dataset.tab});
     case "kind": S.drafts.apply = Object.assign(S.drafts.apply||{}, {kind:v}); S.ui.applyTried = false; render(); return;
@@ -2872,7 +2958,8 @@ document.addEventListener("submit", async ev => {
   if(s === "note"){ const e0 = emp(f.dataset.id), k = "note-"+e0.id, text = (dv(k,"text","")||"").trim(); if(!text){ toast("Write the note first."); return; }
     if(dbOn() && !S.canEdit){ const nk = dv(k,"kind","Training"), date = dv(k,"date",today()); delete S.drafts[k]; return run(() => submitItem("note", {empId:e0.id, noteKind:nk, date, text}), "Note submitted. It appears on the timeline as soon as HR's app processes it."); }
     const e = clone(e0); e.notes = (e.notes||[]).concat([{id:uid("n"), date:dv(k,"date",today()), kind:dv(k,"kind","Training"), by:S.me, text}]); delete S.drafts[k];
-    return run(async () => { await store.put("employees", e); audit("note_added", e.name, dv(k,"kind","Training")); if(e.id !== S.me) await notify(e.id, `New ${dv(k,"kind","Training").toLowerCase()} note on your profile`, `Added by ${nm(S.me)}`, "profile", e.id); }, "Entry saved."); }
+    return run(async () => { await store.put("employees", e); audit("note_added", e.name, dv(k,"kind","Training")); if(e.id !== S.me) await notify(e.id, `New ${dv(k,"kind","Training").toLowerCase()} note on your profile`, `Added by ${nm(S.me)}`, "profile", e.id, "note",
+      {intro:`${nm(S.me)} added a ${dv(k,"kind","Training").toLowerCase()} entry to your history.`, quote:text, cta:{label:"View my history", go:"profile", ref:e.id}}); }, "Entry saved."); }
   if(s === "hol"){ const date = dv("hol","date",""), name = (dv("hol","name","")||"").trim(); if(!date || !name){ toast("Enter a date and a name."); return; }
     const offices = dv("hol","offices",[]) || []; delete S.drafts.hol; return setCfg("holidays", (cfg().holidays||[]).filter(h => !(h.date === date && JSON.stringify(h.offices||[]) === JSON.stringify(offices))).concat([{date, name, offices}])); }
   if(s === "crit"){ const n = (dv("crit","name","")||"").trim(); if(!n) return; delete S.drafts.crit; return setCfg("criteria", (cfg().criteria||[]).concat([n])); }
@@ -2915,6 +3002,17 @@ async function ownerBootstrap(){
   } catch(e){ console.warn("bootstrap", e); }
   bootstrapping = false;
 }
+/* links in notification emails open the right page: ?go=<view>&ref=<id> */
+let DEEP = null;
+try { const q = new URLSearchParams(location.search), v = q.get("go");
+  if(v && /^[a-z]{3,20}$/.test(v)){ DEEP = {view:v, ref:/^[A-Za-z0-9_-]{1,60}$/.test(q.get("ref") || "") ? q.get("ref") : ""}; history.replaceState(null, "", location.pathname + location.hash); } } catch(e){}
+function openDeep(){
+  const d = DEEP; DEEP = null; if(!d || !S.me) return;
+  if(d.view === "approvals" || d.view === "myrequests"){ const r = S.D.requests.find(x => x.id === d.ref); go(d.view === "approvals" && isLead() ? "approvals" : "myrequests"); if(r){ S.modal = {kind:"req", id:r.id}; renderModal(); } return; }
+  if(d.view === "profile") return go("profile", d.ref ? {id:d.ref} : {});
+  if(d.view === "announcements"){ if(d.ref){ S.ui["ann-"+d.ref] = true; markAnnRead([d.ref]); } return go("announcements"); }
+  if(["reviews","reminders","directory","dashboard"].includes(d.view)) return go(d.view);
+}
 function logErr(msg){ if(!msg || S.errors.length > 20) return; S.errors.push(msg); if(S.errors.length <= 5) audit("client_error", String(msg).slice(0,160), APP_VERSION); }
 async function boot(){
   try { const th = LS("hrm.theme"); if(th) document.documentElement.dataset.theme = th; } catch(e){}
@@ -2934,7 +3032,7 @@ async function boot(){
   const tick = () => {
     if(!S.loadedAll && CORE_COLS.every(c => S.loaded[c]) && S.loaded.config) S.loadedAll = true;
     rebuild(); resolveMe();
-    if(S.loadedAll){ if(!S.realEmpId) ownerBootstrap(); render(); scheduleSync(); pruneOwnSubs(); }
+    if(S.loadedAll){ if(!S.realEmpId) ownerBootstrap(); render(); scheduleSync(); pruneOwnSubs(); if(DEEP && S.me) openDeep(); }
   };
   for(const c of SUB_COLS) db.collection(c).onSnapshot(snap => { S.R[c] = snap.docs.map(x => Object.assign({id:x.id}, x.data())); if(!snap.metadata.fromCache) S.loaded[c] = true; tick(); }, fail);
   db.collection("config").doc("main").onSnapshot(snap => {
