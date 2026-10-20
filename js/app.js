@@ -289,7 +289,7 @@ const dv = (k, n, d) => (S.drafts[k] && n in S.drafts[k]) ? S.drafts[k][n] : d;
    rd/<uid>, ph/<uid>   per-person read receipts and self-uploaded profile photo
    audit/<uid>/m/<yyyy-mm>  each person's own monthly audit trail
    requests, notifs, counters   shared working data (Contributors write) */
-const APP_VERSION = "3.3.0", SCHEMA = 2;
+const APP_VERSION = "3.4.0", SCHEMA = 2;
 const PRIVATE_FIELDS = ["phone","gender","birthDate","exitReason","contract","contracts","notes","quotaLog"];
 const SUB_COLS = ["employees","private","requests","candidates","tasks","reviews","reminders","notifs","announcements","attendance","attImports","backups","dec","links","rd","ph","sub"];
 const CORE_COLS = ["employees","requests","tasks","notifs","announcements","attendance"];
@@ -1462,21 +1462,33 @@ const isWorkday = (s, office) => { const w = parse(s).getDay(); return (sched().
 const attDoc = (eid, ym) => S.D.attendance.find(a => a.empId === eid && a.month === ym);
 const monthsWithData = () => [...new Set(S.D.attendance.map(a => a.month))].sort();
 function coverage(ym){ let last = ""; for(const a of S.D.attendance) if(a.month === ym) for(const d of Object.keys(a.days||{})) if(d > last) last = d; return last; }
+/* the date range an office's uploads cover in a month (machine files often cover only part of a month) */
+function officeCoverage(office, ym){
+  const ids = new Set(E().filter(x => (x.office || "") === (office || "")).map(x => x.id)); let from = "", to = "";
+  for(const a of S.D.attendance) if(a.month === ym && ids.has(a.empId)) for(const d of Object.keys(a.days || {})){ if(!from || d < from) from = d; if(d > to) to = d; }
+  if(!from){ const c = coverage(ym); return c ? {from:`${ym}-01`, to:c} : null; }
+  return {from, to};
+}
 function computeAtt(e, ym){
   const sc = sched(), st = toMin(sc.start), en = toMin(sc.end), grace = Number(sc.grace)||0, doc = attDoc(e.id, ym);
-  const r = {hasData:!!doc, expected:0, present:0, late:0, lateMin:0, early:0, missingOut:0, absent:0, leave:0, wfh:0, extra:0, mins:0, inSum:0, inN:0, days:[]};
-  const cov = coverage(ym); if(!cov) return r;
-  const [y,m] = ym.split("-").map(Number), from = `${ym}-01`, to = [cov, e.exitDate ? addDays(e.exitDate, 0) : "9999"].sort()[0];
+  const r = {hasData:!!doc, expected:0, present:0, late:0, lateMin:0, early:0, missingOut:0, absent:0, leave:0, wfh:0, extra:0, mins:0, brk:0, workDays:0, inSum:0, inN:0, days:[]};
+  const oc = officeCoverage(e.office, ym); if(!oc) return r;
+  const from = oc.from, to = [oc.to, e.exitDate ? addDays(e.exitDate, 0) : "9999"].sort()[0];
   for(let s = from; s <= to; s = addDays(s, 1)){
     if(s.slice(0,7) !== ym) break; if(e.joinDate && s < e.joinDate) continue;
     const rec = doc?.days?.[s], wd = isWorkday(s, e.office);
     const lv = S.D.requests.find(q => q.empId === e.id && q.status === "approved" && q.start <= s && q.end >= s);
     let status = "";
-    if(rec && (rec.in || rec.out)){
+    const work = rec ? (rec.work != null ? Number(rec.work) : (rec.in && rec.out && toMin(rec.out) > toMin(rec.in) ? toMin(rec.out) - toMin(rec.in) : 0)) : 0;
+    if(rec && rec.wfh){
+      status = "wfh"; if(wd) r.wfh++; else r.extra++;
+      r.mins += work; r.brk += Number(rec.brk) || 0; if(work) r.workDays++;
+    } else if(rec && (rec.in || rec.out)){
       const i = toMin(rec.in), o = toMin(rec.out);
       status = !wd ? "extra" : (i != null && i > st + grace) ? "late" : "present";
       if(wd){ r.present++; if(status === "late"){ r.late++; r.lateMin += i - st; } if(o != null && o < en) r.early++; } else r.extra++;
-      if(!rec.out || !rec.in) r.missingOut++; else if(o > i) r.mins += o - i;
+      if(rec.miss || !rec.out || !rec.in) r.missingOut++;
+      r.mins += work; r.brk += Number(rec.brk) || 0; if(work) r.workDays++;
       if(i != null){ r.inSum += i; r.inN++; }
     } else if(!wd) continue;
     else if(lv && lv.kind === "leave"){ status = "leave"; r.leave++; }
@@ -1484,13 +1496,15 @@ function computeAtt(e, ym){
     else if(doc){ status = "absent"; r.absent++; }
     else continue;
     if(wd) r.expected++;
-    r.days.push({date:s, in:rec?.in||"", out:rec?.out||"", status, type:lv ? typeName(lv) : ""});
+    r.days.push({date:s, in:rec?.in||"", out:rec?.out||"", work: rec ? work : null, brk: rec ? (Number(rec.brk) || 0) : null, n:rec?.n || 0, miss: !!(rec && !rec.wfh && (rec.miss || !rec.in || !rec.out)), note:rec?.note || "", status, type:lv ? typeName(lv) : ""});
   }
   const base = r.expected - r.leave;
   r.rate = base > 0 ? (r.present + r.wfh) / base * 100 : null;
   r.avgIn = r.inN ? hhmm(r.inSum / r.inN) : "—";
+  r.avgWork = r.workDays ? r.mins / r.workDays : 0; r.avgBrk = r.workDays ? r.brk / r.workDays : 0;
   return r;
 }
+const dur = m => m == null || isNaN(m) ? "—" : `${Math.floor(m/60)}h ${pad(Math.round(m % 60))}m`;
 const attPill = s => ({present:`<span class="pill p-approved">On time</span>`, late:`<span class="pill p-pending">Late</span>`, absent:`<span class="pill p-rejected">Absent</span>`,
   leave:`<span class="pill p-info">Leave</span>`, wfh:`<span class="pill p-neutral">WFH</span>`, extra:`<span class="pill p-neutral">Weekend</span>`})[s] || "";
 const monthLabel = ym => { const [y,m] = ym.split("-").map(Number); return `${MONL[m-1]} ${y}`; };
@@ -1505,7 +1519,7 @@ function attSummary(list, ym){
   const sum = k => rows.reduce((s,[e,r]) => s + r[k], 0);
   const base = sum("expected") - sum("leave"), inN = sum("inN");
   return {rows, rate: base > 0 ? (sum("present") + sum("wfh")) / base * 100 : null, late:sum("late"), lateMin:sum("lateMin"), absent:sum("absent"), missingOut:sum("missingOut"),
-    leave:sum("leave"), wfh:sum("wfh"), avgIn: inN ? hhmm(sum("inSum") / inN) : "—", hours: sum("mins") / 60};
+    leave:sum("leave"), wfh:sum("wfh"), avgIn: inN ? hhmm(sum("inSum") / inN) : "—", hours: sum("mins") / 60, mins:sum("mins"), brk:sum("brk"), workDays:sum("workDays")};
 }
 function monthNav(ym, act){
   return `<div class="row" style="gap:6px"><button class="ib" type="button" data-act="${act}" data-v="-1" aria-label="Previous month">${ic("left")}</button><span class="tag" style="font-size:.86rem;padding:8px 12px;min-width:132px;justify-content:center">${monthLabel(ym)}</span><button class="ib" type="button" data-act="${act}" data-v="1" aria-label="Next month">${ic("right")}</button></div>`;
@@ -1513,8 +1527,8 @@ function monthNav(ym, act){
 function vAttendance(){
   const ym = attMonth(), list = attScope(), A = attSummary(list, ym), cov = coverage(ym), sc = sched();
   const offices = cfg().offices || [], divs = cfg().divisions || [];
-  const head = `<div class="page-h"><div><h1>Attendance Report</h1><p>Built from attendance machine or spreadsheet exports (.xlsx, .xls, .csv). Working hours ${esc(sc.start)}–${esc(sc.end)}, late after ${Number(sc.grace)||0} minutes grace. Approved leave and WFH are matched automatically.</p></div>
-    <div class="row"><button class="btn" type="button" data-act="att-template">${ic("doc")}Template</button><button class="btn" type="button" data-act="att-export" ${A.rows.length?"":"disabled"}>${ic("download")}Export CSV</button>${isHR() ? `<button class="btn pri" type="button" data-act="att-upload">${ic("upload")}Upload Excel</button>` : ""}</div></div>`;
+  const head = `<div class="page-h"><div><h1>Attendance Report</h1><p>Built from the fingerprint machines (F1: Denpasar, Surabaya), daily sheets (F2: Jakarta, PeraONE Xperience) and WFH logs. Worked hours exclude breaks. Working hours ${esc(sc.start)}–${esc(sc.end)}, late after ${Number(sc.grace)||0} minutes grace. Approved leave and WFH are matched automatically.</p></div>
+    <div class="row"><button class="btn" type="button" data-act="att-template">${ic("doc")}Templates</button><button class="btn" type="button" data-act="att-export" ${A.rows.length?"":"disabled"}>${ic("download")}Export CSV</button>${isHR() ? `<button class="btn pri" type="button" data-act="att-upload">${ic("upload")}Upload Excel</button>` : ""}</div></div>`;
   const filters = `<div class="row" style="justify-content:space-between">${monthNav(ym, "att-month")}<div class="row">
     <select id="att-office" aria-label="Office" style="width:auto"><option value="">All offices</option>${offices.map(o => `<option ${S.ui.attOffice===o?"selected":""}>${esc(o)}</option>`).join("")}</select>
     <select id="att-div" aria-label="Division" style="width:auto"><option value="">All divisions</option>${divs.map(o => `<option ${S.ui.attDiv===o?"selected":""}>${esc(o)}</option>`).join("")}</select></div></div>`;
@@ -1523,7 +1537,8 @@ function vAttendance(){
   const kpis = `<div class="grid kpis">${kpi("Attendance rate", A.rate == null ? "—" : A.rate.toFixed(1)+"%", `data until ${fmt(cov)}`, A.rate != null && A.rate < 95 ? "warn" : "")}
     ${kpi("Average check-in", A.avgIn, `start ${esc(sc.start)}`)}${kpi("Late arrivals", A.late, `${Math.round(A.lateMin)} minutes in total`, A.late ? "warn" : "")}
     ${kpi("Unexcused absences", A.absent, "workdays with no punch, leave or WFH", A.absent ? "warn" : "")}${kpi("Missing punches", A.missingOut, "no check-in or check-out")}
-    ${kpi("On leave · WFH", `${A.leave} · ${A.wfh}`, "approved days")}</div>`;
+    ${kpi("On leave · WFH", `${A.leave} · ${A.wfh}`, "approved or logged days")}
+    ${kpi("Hours worked", Math.round(A.mins / 60).toLocaleString(), A.workDays ? `avg ${dur(A.mins / A.workDays)} per day` : "breaks excluded")}${kpi("Break time", Math.round(A.brk / 60).toLocaleString() + " h", A.workDays ? `avg ${dur(A.brk / A.workDays)} per day` : "from punches between in and out")}</div>`;
   // daily chart
   const daysInM = []; for(let s = `${ym}-01`; s <= cov && s.slice(0,7) === ym; s = addDays(s,1)) if(isWorkday(s, S.ui.attOffice || null)) daysInM.push(s);
   const day = s => { const c = {present:0, late:0, wfh:0, leave:0, absent:0}; for(const [e,r] of A.rows){ const d = r.days.find(x => x.date === s); if(d && c[d.status] !== undefined) c[d.status]++; } return c; };
@@ -1534,10 +1549,11 @@ function vAttendance(){
     <div class="card-b" style="padding-top:0"><div class="legend">${Object.entries({present:"On time", late:"Late", wfh:"WFH", leave:"Leave", absent:"Absent"}).map(([k,l]) => `<span><i style="background:${colors[k]}"></i>${l}</span>`).join("")}</div></div>`, `<span class="tag">Workdays · ${monthLabel(ym)}</span>`);
   const byOff = offices.map(o => { const s = attSummary(list.filter(e => e.office === o), ym); return [o, s.rate == null ? 0 : Math.round(s.rate*10)/10, s.rows.length]; }).filter(x => x[2]);
   const offCard = card("Attendance rate by office", "grid", "c5", `<div class="card-b">${byOff.length ? hbars(byOff.map(x => [x[0], x[1]]), 100, v => v.toFixed(0)+"%") : `<p class="muted small">No office data.</p>`}</div>`);
-  const tbl = `<section class="card"><div class="card-h"><h2>Employees</h2><span class="tag">${A.rows.length} with data</span></div><div class="tw"><table class="t rt"><thead><tr><th>Employee</th><th>Office</th><th class="r">Present</th><th class="r">Late</th><th class="r">Absent</th><th class="r">Leave</th><th class="r">WFH</th><th class="r">Missing</th><th class="r">Avg in</th><th class="r">Rate</th></tr></thead><tbody>
+  const tbl = `<section class="card"><div class="card-h"><h2>Employees</h2><span class="tag">${A.rows.length} with data</span></div><div class="tw"><table class="t rt"><thead><tr><th>Employee</th><th>Office</th><th class="r">Present</th><th class="r">Late</th><th class="r">Absent</th><th class="r">Leave</th><th class="r">WFH</th><th class="r">Missing</th><th class="r">Avg in</th><th class="r">Hours</th><th class="r">Break</th><th class="r">Rate</th></tr></thead><tbody>
     ${A.rows.sort((a,b) => (a[1].rate ?? 101) - (b[1].rate ?? 101)).map(([e,r]) => `<tr class="click" data-act="open-emp" data-id="${e.id}" data-tab="attendance"><td class="wide">${who(e.id, e.division||e.dept)}</td><td data-l="Office">${esc(e.office||"—")}</td>
       <td data-l="Present" class="r num">${r.present}/${r.expected - r.leave}</td><td data-l="Late" class="r num">${r.late}${r.late?` <span class="small muted">(${r.lateMin}m)</span>`:""}</td><td data-l="Absent" class="r num ${r.absent?"down":""}">${r.absent}</td>
       <td data-l="Leave" class="r num">${r.leave}</td><td data-l="WFH" class="r num">${r.wfh}</td><td data-l="Missing" class="r num">${r.missingOut}</td><td data-l="Avg in" class="r num">${r.avgIn}</td>
+      <td data-l="Hours" class="r num" title="Average ${dur(r.avgWork)} per day">${(r.mins/60).toFixed(1)}</td><td data-l="Break" class="r num" title="Average ${dur(r.avgBrk)} per day">${(r.brk/60).toFixed(1)}</td>
       <td data-l="Rate" class="r num"><b class="${r.rate != null && r.rate < 90 ? "down" : ""}">${r.rate == null ? "—" : r.rate.toFixed(0)+"%"}</b></td></tr>`).join("")}</tbody></table></div>
     ${list.filter(e => !attDoc(e.id, ym) && e.status !== "Resigned").length ? `<div class="card-b small muted" style="border-top:1px solid var(--line)">No data this month for: ${list.filter(e => !attDoc(e.id, ym) && e.status !== "Resigned").map(e => esc(e.name)).join(", ")}. Check that their Employee ID matches the attendance machine.</div>` : ""}</section>`;
   return head + upload + filters + kpis + `<div class="grid split">${chart}${offCard}</div>` + tbl + importLog();
@@ -1545,7 +1561,7 @@ function vAttendance(){
 function importLog(){
   const list = [...S.D.attImports].sort((a,b) => b.at.localeCompare(a.at)).slice(0,8);
   if(!list.length) return "";
-  return `<section class="card"><div class="card-h"><h2>Upload history</h2></div><div class="list">${list.map(x => `<div class="li"><span class="tile c5" style="width:36px;height:36px">${ic("doc")}</span><div class="grow"><b style="font-weight:600;display:block">${esc(x.file)}</b>
+  return `<section class="card"><div class="card-h"><h2>Upload history</h2></div><div class="list">${list.map(x => `<div class="li"><span class="tile c5" style="width:36px;height:36px">${ic("doc")}</span><div class="grow"><b style="font-weight:600;display:block">${esc(x.file)}${x.fmt && ATT_FMT[x.fmt] ? ` <span class="tag">${esc(ATT_FMT[x.fmt].label.split(" · ")[0])}${x.office ? " · " + esc(x.office) : ""}</span>` : ""}</b>
     <span class="small muted">${fmt(x.from)} – ${fmt(x.to)} · ${x.records} day records for ${x.employees} employees${x.unmatched?` · ${x.unmatched} unmatched ID(s)`:""} · by ${esc(nm(x.by))}, ${ago(x.at)}</span></div></div>`).join("")}</div></section>`;
 }
 
@@ -1555,7 +1571,7 @@ function loadXLSX(){
   if(window.XLSX) return Promise.resolve(window.XLSX);
   return xlsxP = xlsxP || new Promise((res, rej) => {
     const add = (src, next) => { const s = document.createElement("script"); s.src = src; s.onload = () => res(window.XLSX); s.onerror = next; document.head.appendChild(s); };
-    add("https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js", () => add("https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js", () => { xlsxP = null; rej(new Error("load")); }));
+    add("vendor/xlsx.full.min.js", () => add("https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js", () => { xlsxP = null; rej(new Error("load")); }));
   });
 }
 const MAPS = {id:/^(id|emp.?id|employee.?(id|no|number|code)|nik|nip|badge|ac.?no\.?|no\.? ?(karyawan|pegawai)|user.?id|pin|enroll.*|staff.?(id|no))$/i,
@@ -1589,16 +1605,139 @@ function matchEmp(idv, namev){
   const n = normName(namev); if(n) return E().find(x => normName(x.name) === n) || null;
   return null;
 }
+/* Attendance import formats
+   F1  fingerprint machine export (Denpasar & Surabaya): sheet "Attendance Details" = one row per scan (ID, Name, Att.Type, Att.Time).
+       Scans are paired in time order (in, out, in, out…): first = check-in, last = check-out, gaps between pairs = breaks.
+       Machine IDs are per office (the same number can be a different person in each office), so a file is read for one office.
+   F2  daily sheet (Jakarta & PeraONE Xperience): one row per person per day with check-in, break start/end, check-out.
+   WFH work-from-home log: date, start, end, break minutes and notes; the day counts as WFH.
+   other  any spreadsheet, columns matched by hand (one row per day or one row per scan). */
+const ATT_FMT = {
+  f1: {label:"F1 · Fingerprint machine", hint:"Denpasar & Surabaya — the .xls exported by the machine", icon:"fp"},
+  f2: {label:"F2 · Daily attendance sheet", hint:"Jakarta & PeraONE Xperience — one row per person per day", icon:"cal"},
+  wfh: {label:"WFH log", hint:"Work-from-home days with start, end and break", icon:"home"},
+  other: {label:"Other export", hint:"Any spreadsheet — match the columns yourself", icon:"doc"},
+};
+const ATT_TPL = {
+  f1: {file:"ONEderland_Attendance_F1_Fingerprint.xlsx", sheet:"Attendance Details", head:["No.","Device ID","ID","Name","Att.Type","Att.Time"],
+    rows:[[1,1,7,"VANISA","In","2026-11-02 07:58"],[2,1,11,"WULAN","In","2026-11-02 08:21"],[3,1,7,"VANISA","Out","2026-11-02 12:02"],[4,1,7,"VANISA","In","2026-11-02 13:01"],[5,1,11,"WULAN","Out","2026-11-02 12:30"],[6,1,11,"WULAN","In","2026-11-02 13:15"],[7,1,7,"VANISA","Out","2026-11-02 17:05"],[8,1,11,"WULAN","Out","2026-11-02 17:40"]],
+    notes:["Upload the machine's own export (.xls) as it is — this template only shows the layout.","ID = the user number on the fingerprint machine (not the HRM Employee ID). The HRM remembers which machine ID belongs to which employee per office.","Each scan is one row. Scans are paired in time order: first scan = check-in, last scan = check-out, the time between an 'out' and the next 'in' counts as break. The In/Out/On/Off labels are ignored because people often press the wrong key.","An odd number of scans on a day is flagged as a missing scan."]},
+  f2: {file:"ONEderland_Attendance_F2_Daily.xlsx", sheet:"Attendance", head:["Employee ID","Name","Date","Check In","Break Start","Break End","Check Out","Break (minutes)","Notes"],
+    rows:[["ONE-0001","Example Person","2026-11-02","08:25","12:00","13:00","17:35","",""],["ONE-0001","Example Person","2026-11-03","08:40","","","17:30","60","Break not scanned"],["ONE-0002","Second Person","2026-11-02","09:02","12:30","13:10","18:05","","Client visit in the afternoon"]],
+    notes:["One row per person per day. Employee ID = the ID in the HRM (e.g. ONE-0031).","Dates as YYYY-MM-DD or DD/MM/YYYY, times as HH:MM (24-hour).","Break: fill Break Start + Break End, or just Break (minutes). Worked time = Check Out − Check In − break.","Leave Check Out empty if the person didn't check out — it's flagged as a missing scan."]},
+  wfh: {file:"ONEderland_Attendance_WFH.xlsx", sheet:"WFH", head:["Employee ID","Name","Date","Start","End","Break (minutes)","Activity / Notes"],
+    rows:[["ONE-0001","Example Person","2026-11-04","08:30","17:30","60","Monthly report and client calls"],["ONE-0002","Second Person","2026-11-04","09:00","16:00","30","Content plan Q1"]],
+    notes:["One row per person per WFH day. The day is shown as WFH in the attendance report (not absent).","Worked time = End − Start − Break (minutes).","Ask employees to also submit a WFH request in the HRM so their supervisor approves it."]},
+};
+async function attTemplate(kind){
+  const T = ATT_TPL[kind]; if(!T) return;
+  try { const X = await loadXLSX(), wb = X.utils.book_new();
+    const ws = X.utils.aoa_to_sheet([T.head].concat(T.rows)); ws["!cols"] = T.head.map(h => ({wch:Math.max(12, h.length + 4)})); X.utils.book_append_sheet(wb, ws, T.sheet);
+    const help = X.utils.aoa_to_sheet([["How to use this template"], [""]].concat(T.notes.map(n => ["• " + n]))); help["!cols"] = [{wch:120}]; X.utils.book_append_sheet(wb, help, "How to use");
+    await download(T.file, X.write(wb, {type:"array", bookType:"xlsx"})); }
+  catch(e){ toast("The template couldn't be created. Check your connection and try again."); }
+}
 async function readAttFile(file){
-  S.ui.attParse = {loading:true, file:file.name}; render();
+  const af = S.ui.attFmt || "f1", office = S.ui.attFmtOffice || "";
+  S.ui.attParse = {loading:true, file:file.name, fmt:af}; render();
   try {
     const X = await loadXLSX(), buf = await file.arrayBuffer();
     const wb = X.read(buf, {type:"array", raw:false, cellDates:false});
     const sheets = wb.SheetNames.map(n => [n, X.utils.sheet_to_json(wb.Sheets[n], {header:1, raw:true, defval:""})]).filter(([n,r]) => r.length);
     if(!sheets.length) throw new Error("empty");
-    S.ui.attParse = {file:file.name, sheets, sheet:0, dmy:true}; autoMap(); render();
-  } catch(err){ S.ui.attParse = {error: err && err.message === "load" ? "The spreadsheet reader couldn't load. Check your connection and try again." : "This file couldn't be read. Upload an .xlsx, .xls or .csv export."}; render(); }
+    S.ui.attParse = {file:file.name, sheets, sheet:0, dmy:true, fmt:af, office, assign:{}};
+    if(af === "other") autoMap(); else pickAttSheet(S.ui.attParse);
+    render();
+  } catch(err){ S.ui.attParse = {fmt:af, error: err && err.message === "load" ? "The spreadsheet reader couldn't load. Check your connection and try again." : "This file couldn't be read. Upload an .xlsx, .xls or .csv export."}; render(); }
 }
+const ATT_COLS = {
+  id:/^(id|emp.?id|employee.?(id|no|number|code)|nik|nip|badge|ac.?no\.?|user.?id|pin|enroll.*|staff.?(id|no)|no\.? ?(karyawan|pegawai))$/i,
+  name:/^(name|nama|employee.?name|nama.?(karyawan|pegawai)|full.?name)$/i,
+  date:/^(date|tanggal|tgl|work.?date|att.?date)$/i,
+  time:/^(att\.?\s*time|date.?time|time|timestamp|waktu|punch.?time|scan.?time)$/i,
+  type:/^(att\.?\s*type|type|state|status|jenis)$/i,
+  in:/^(check.?in|clock.?in|in|masuk|jam.?masuk|time.?in|start|mulai|jam.?mulai)$/i,
+  out:/^(check.?out|clock.?out|out|pulang|keluar|jam.?(pulang|keluar)|time.?out|end|selesai|jam.?selesai)$/i,
+  bs:/^(break.?(start|out)|istirahat.?(mulai|keluar))$/i,
+  be:/^(break.?(end|in)|istirahat.?(selesai|masuk|kembali))$/i,
+  bm:/^(break\s*\(?(min|minutes|menit)\)?|break.?minutes|istirahat\s*\(?menit\)?)$/i,
+  note:/^(notes?|activity.*|aktivitas|keterangan|catatan|remark.?s?)$/i,
+};
+function pickAttSheet(P){
+  const want = P.fmt === "f1" ? /attendance\s*details/i : P.fmt === "wfh" ? /wfh/i : /attendance|absen/i;
+  let best = -1;
+  P.sheets.forEach(([n, rows], i) => { if(best < 0 && want.test(n) && attHeader(rows, P.fmt).hi >= 0) best = i; });
+  if(best < 0) P.sheets.forEach(([n, rows], i) => { if(best < 0 && attHeader(rows, P.fmt).hi >= 0) best = i; });
+  P.sheet = Math.max(0, best);
+}
+function attHeader(rows, kind){
+  for(let i = 0; i < Math.min(15, rows.length); i++){
+    const H = rows[i].map(c => String(c).replace(/\s+/g, " ").trim()), col = {};
+    H.forEach((h, j) => { for(const [k, re] of Object.entries(ATT_COLS)) if(col[k] == null && re.test(h)) col[k] = j; });
+    const idx = H.findIndex(h => /^id$/i.test(h)); if(idx >= 0) col.id = idx;           // "ID", not "Device ID"
+    const ok = kind === "f1" ? (col.time != null && (col.id != null || col.name != null)) : (col.date != null && col.in != null && (col.id != null || col.name != null));
+    if(ok) return {hi:i, col};
+  }
+  return {hi:-1, col:{}};
+}
+const dayCalc = list => {
+  const t = [...list].sort((a,b) => a-b).filter((x, i, a) => i === 0 || x - a[i-1] >= 2);  // ignore double scans within 2 minutes
+  const n = t.length; if(!n) return null;
+  if(n === 1) return {in:hhmm(t[0]), out:"", work:0, brk:0, n, miss:true};
+  let brk = 0; for(let k = 1; 2*k <= n - 2; k++) brk += t[2*k] - t[2*k-1];
+  return {in:hhmm(t[0]), out:hhmm(t[n-1]), work:Math.max(0, t[n-1] - t[0] - brk), brk, n, miss: n % 2 === 1};
+};
+function attStamp(v, dmy){
+  if(typeof v === "number") return {date:parseDateVal(v, dmy), t:parseTimeVal(v)};
+  const str = String(v || "").trim(); return {date:parseDateVal(str, dmy), t:parseTimeVal(str.split(/\s+/).slice(1).join(" ") || "")};
+}
+function attOfficePool(office){ return E().filter(e => !e.system && (!office || e.office === office)); }
+function buildStructured(P){
+  const rows = P.sheets[P.sheet][1], {hi, col} = attHeader(rows, P.fmt);
+  const out = new Map(), unmatched = new Map(), machine = new Map(); let bad = 0, total = 0;
+  if(hi < 0) return {recs:[], unmatched:[], machine:[], bad:0, total:0, headerMissing:true};
+  const data = rows.slice(hi + 1).filter(r => r.some(c => String(c).trim() !== ""));
+  if(P.fmt === "f1"){
+    const pool = attOfficePool(P.office), punches = new Map();
+    for(const r of data){
+      total++; const mid = String(r[col.id] ?? "").trim(), mname = String(col.name != null ? r[col.name] : "").trim();
+      const st = attStamp(r[col.time], P.dmy); if(!st.date || st.t == null){ bad++; continue; }
+      const key = mid || mname; const m = machine.get(key) || {mid, name:mname, scans:0, days:new Set()}; m.scans++; m.days.add(st.date); machine.set(key, m);
+      const k = key + "|" + st.date; (punches.get(k) || punches.set(k, []).get(k)).push(st.t);
+    }
+    const byName = n => { const nn = normName(n); if(!nn) return null; const hits = pool.filter(e => normName(e.name) === nn || normName(e.name.split(" ")[0]) === nn); return hits.length === 1 ? hits[0] : null; };
+    for(const [key, m] of machine){
+      const a = P.assign[key];
+      const byId = m.mid ? pool.find(e => String(e.attId || "") === m.mid) : null;
+      const auto = byId || (a === undefined ? byName(m.name) : null);
+      m.empId = a === "skip" ? null : (a || auto?.id || null); m.how = a ? "chosen" : byId ? "machine ID" : auto ? "name" : "";
+    }
+    for(const [k, list] of punches){
+      const [key, date] = k.split("|"), m = machine.get(key);
+      if(!m.empId){ unmatched.set(key, (unmatched.get(key) || 0) + list.length); continue; }
+      const d = dayCalc(list); if(d) out.set(m.empId + "|" + date, Object.assign({empId:m.empId, date, src:"F1"}, d));
+    }
+  } else {
+    for(const r of data){
+      total++; const idv = col.id != null ? r[col.id] : "", namev = col.name != null ? r[col.name] : "";
+      const date = parseDateVal(r[col.date], P.dmy); if(!date){ bad++; continue; }
+      const e = matchEmp(idv, namev);
+      if(!e){ const key = `${idv || ""}${namev ? " · " + namev : ""}`.trim() || "(blank)"; unmatched.set(key, (unmatched.get(key) || 0) + 1); continue; }
+      const ti = parseTimeVal(r[col.in]), to = col.out != null ? parseTimeVal(r[col.out]) : null;
+      const bs = col.bs != null ? parseTimeVal(r[col.bs]) : null, be = col.be != null ? parseTimeVal(r[col.be]) : null;
+      const bm = col.bm != null && String(r[col.bm]).trim() !== "" ? Number(r[col.bm]) || 0 : 0;
+      const brk = bs != null && be != null && be > bs ? be - bs : bm;
+      const work = ti != null && to != null && to > ti ? Math.max(0, to - ti - brk) : 0;
+      const note = col.note != null ? String(r[col.note] || "").trim().slice(0, 200) : "";
+      const rec = {empId:e.id, date, in:hhmm(ti), out:hhmm(to), work, brk, n:(ti != null) + (to != null), miss: P.fmt !== "wfh" && (ti == null || to == null), src:P.fmt.toUpperCase()};
+      if(note) rec.note = note; if(P.fmt === "wfh") rec.wfh = true;
+      out.set(e.id + "|" + date, rec);
+    }
+  }
+  const recs = [...out.values()], dates = recs.map(x => x.date).sort();
+  return {recs, unmatched:[...unmatched.entries()], machine:[...machine.entries()].map(([k, m]) => Object.assign({key:k}, m, {days:m.days.size})), bad, total, from:dates[0], to:dates[dates.length-1], employees:new Set(recs.map(x => x.empId)).size};
+}
+function attResult(P){ return P.fmt === "other" ? buildAtt() : buildStructured(P); }
 function autoMap(){
   const P = S.ui.attParse, rows = P.sheets[P.sheet][1];
   let hi = 0; for(let i = 0; i < Math.min(15, rows.length); i++){ const r = rows[i].filter(c => String(c).trim() !== ""); if(r.length >= 3 && r.filter(c => typeof c === "string" && isNaN(Number(c))).length >= 2){ hi = i; break; } }
@@ -1627,14 +1766,47 @@ function buildAtt(){
   return {mode, recs:out, unmatched:[...unmatched.entries()], bad, total, from:dates[0], to:dates[dates.length-1], employees:new Set(out.map(x => x.empId)).size};
 }
 function uploadPanel(){
-  const P = S.ui.attParse;
+  const P = S.ui.attParse, af = S.ui.attFmt || "f1", offices = cfg().offices || [];
   const close = `<button class="ib plain" type="button" data-act="att-upclose" aria-label="Close upload">${ic("x")}</button>`;
-  if(!P || P.error) return `<section class="card"><div class="card-h"><span class="tile c5">${ic("upload")}</span><h2>Upload attendance file</h2>${close}</div><div class="card-b stack">
-    <label class="drop" id="att-drop"><input type="file" id="att-file" accept=".xlsx,.xls,.csv"><span class="tile c1">${ic("upload")}</span><b>Drop the Excel file here or click to choose</b><span class="small muted">Attendance machine exports work as-is: one row per day with Check In / Check Out, or one row per fingerprint scan (first scan = in, last scan = out).</span></label>
-    ${P?.error ? `<ul class="errs"><li>${esc(P.error)}</li></ul>` : ""}
-    <p class="small muted">Rows are matched to employees by <b>Employee ID</b> (e.g. ONE-0031 or just 31), or by full name when there's no ID column. Uploading the same dates again replaces those days.</p></div></section>`;
+  if(!P || P.error){
+    const needOffice = af === "f1", off = S.ui.attFmtOffice || "";
+    return `<section class="card"><div class="card-h"><span class="tile c5">${ic("upload")}</span><h2>Upload attendance</h2>${close}</div><div class="card-b stack">
+      <div class="att-fmts" role="radiogroup" aria-label="File format">${Object.entries(ATT_FMT).map(([k, f]) => `<button type="button" class="att-fmt" role="radio" aria-checked="${af === k}" data-act="att-fmt" data-v="${k}">
+        <span class="tile ${af === k ? "c1" : "c5"}">${ic(f.icon)}</span><span><b>${esc(f.label)}</b><span class="small muted">${esc(f.hint)}</span></span></button>`).join("")}</div>
+      ${needOffice ? `<label class="f" style="max-width:320px"><span>Which office's machine?</span><select id="att-fmt-office"><option value="">Choose office</option>${offices.map(o => `<option ${off === o ? "selected" : ""}>${esc(o)}</option>`).join("")}</select><small>Machine IDs are matched within this office only.</small></label>` : ""}
+      ${ATT_TPL[af] ? `<div><button class="btn sm" type="button" data-act="att-tpl" data-v="${af}">${ic("download")}Download ${esc(ATT_FMT[af].label.split(" · ")[0])} template</button></div>` : ""}
+      ${needOffice && !off ? `<div class="note">${ic("info")}<div>Choose the office first, then select the file.</div></div>`
+        : `<label class="drop" id="att-drop"><input type="file" id="att-file" accept=".xlsx,.xls,.csv"><span class="tile c1">${ic("upload")}</span><b>Drop the file here or click to choose</b><span class="small muted">${af === "f1" ? "The machine's export as it is (.xls) — the sheet “Attendance Details” is read automatically." : af === "other" ? "Any export with one row per day (check-in/check-out) or one row per scan." : "Fill in the template above, or any sheet with the same column names."}</span></label>`}
+      ${P?.error ? `<ul class="errs"><li>${esc(P.error)}</li></ul>` : ""}
+      <p class="small muted">Uploading the same dates again replaces those days for the people in the file.</p></div></section>`;
+  }
   if(P.loading) return `<section class="card"><div class="empty"><b>Reading ${esc(P.file)}…</b>Preparing the preview.</div></section>`;
-  const res = buildAtt(), rows = P.sheets[P.sheet][1], H = P.headers, M = P.map;
+  if(P.fmt === "other") return otherPanel();
+  const res = buildStructured(P), rows = P.sheets[P.sheet][1], ok = res.recs.length > 0, pool = attOfficePool(P.office);
+  const sample = res.recs.slice().sort((a,b) => (a.date + nm(a.empId)).localeCompare(b.date + nm(b.empId))).slice(0, 8);
+  const missN = res.recs.filter(r => r.miss).length, totW = res.recs.reduce((s, r) => s + (r.work || 0), 0), totB = res.recs.reduce((s, r) => s + (r.brk || 0), 0);
+  return `<section class="card"><div class="card-h"><span class="tile c5">${ic(ATT_FMT[P.fmt].icon)}</span><h2>${esc(P.file)}<br><span class="small muted" style="font-family:var(--f-body);font-weight:500">${esc(ATT_FMT[P.fmt].label)}${P.office ? " · " + esc(P.office) : ""} · ${res.total} rows</span></h2>${close}</div>
+    <div class="card-b stack">
+      ${P.sheets.length > 1 ? `<label class="f" style="max-width:260px"><span>Sheet</span><select id="att-sheet">${P.sheets.map(([n],i) => `<option value="${i}" ${P.sheet===i?"selected":""}>${esc(n)}</option>`).join("")}</select></label>` : ""}
+      ${res.headerMissing ? `<ul class="errs"><li>${P.fmt === "f1" ? "This sheet has no “ID / Name / Att.Time” columns. Pick the sheet “Attendance Details”." : "The columns weren't recognised. Use the template's column names (Employee ID, Name, Date, Check In / Start, Check Out / End)."}</li></ul>` : ""}
+      ${P.fmt === "f1" && res.machine.length ? `<div><h3 class="sub">People on the machine</h3><p class="small muted">Each machine user is linked to an employee in ${esc(P.office)}. Links found by machine ID or name are pre-filled — check them once; the HRM remembers the machine ID for next time.</p>
+        <div class="tw" style="border:1px solid var(--line);border-radius:10px"><table class="t rt"><thead><tr><th>Machine ID</th><th>Name on machine</th><th class="r">Days</th><th>Employee</th></tr></thead><tbody>
+        ${res.machine.sort((a,b) => Number(a.mid) - Number(b.mid)).map(m => `<tr><td data-l="Machine ID" class="num">${esc(m.mid || "—")}</td><td data-l="Name">${esc(m.name || "—")}</td><td data-l="Days" class="r num">${m.days}</td>
+          <td data-l="Employee"><select data-attassign="${esc(m.key)}" aria-label="Employee for machine user ${esc(m.mid)}"><option value="skip" ${!m.empId ? "selected" : ""}>— not imported —</option>${pool.map(e => `<option value="${e.id}" ${m.empId === e.id ? "selected" : ""}>${esc(e.name)} · ${esc(e.empNo)}</option>`).join("")}</select>${m.how && m.how !== "chosen" ? ` <span class="small muted">matched by ${esc(m.how)}</span>` : ""}</td></tr>`).join("")}</tbody></table></div></div>` : ""}
+      <div class="grid kpis k4">${kpi("Day records", res.recs.length, res.from ? `${fmt(res.from)} – ${fmt(res.to)}` : "—")}${kpi("Employees", res.employees, P.fmt === "f1" ? `of ${pool.length} in ${esc(P.office)}` : `of ${activeE().length} active`)}
+        ${kpi("Hours · Break", `${Math.round(totW/60)} h · ${Math.round(totB/60)} h`, res.recs.length ? `avg ${dur(totW / res.recs.length)} worked` : "")}${kpi(P.fmt === "wfh" ? "Skipped rows" : "Missing scans", P.fmt === "wfh" ? res.bad : missN, P.fmt === "wfh" ? "no readable date" : "days with an odd number of scans", (P.fmt === "wfh" ? res.bad : missN) ? "warn" : "")}</div>
+      ${sample.length ? `<div class="tw" style="border:1px solid var(--line);border-radius:10px"><table class="t rt"><thead><tr><th>Employee</th><th>Date</th><th>In</th><th>Out</th><th class="r">Break</th><th class="r">Worked</th></tr></thead><tbody>
+        ${sample.map(r => `<tr><td data-l="Employee">${esc(nm(r.empId))}</td><td data-l="Date">${fmt(r.date)}</td><td data-l="In" class="num">${esc(r.in || "—")}</td><td data-l="Out" class="num">${r.out ? esc(r.out) : `<span class="down">missing</span>`}</td><td data-l="Break" class="r num">${r.brk ? dur(r.brk) : "—"}</td><td data-l="Worked" class="r num">${dur(r.work)}${r.miss && P.fmt === "f1" ? ` <span class="small down" title="${r.n} scans">!</span>` : ""}</td></tr>`).join("")}</tbody></table></div>
+        <p class="small muted">Showing ${sample.length} of ${res.recs.length} day records.</p>` : ""}
+      ${res.unmatched.length && P.fmt !== "f1" ? `<div class="note warn">${ic("alert")}<div><b>Not matched to any employee:</b> ${res.unmatched.slice(0,12).map(([k,n]) => `${esc(k)} (${n})`).join(", ")}${res.unmatched.length > 12 ? "…" : ""}. These rows are skipped — check the Employee ID.</div></div>` : ""}
+      ${res.bad && P.fmt !== "wfh" ? `<p class="small muted">${res.bad} row(s) without a readable date/time were skipped.</p>` : ""}
+      ${!ok && !res.headerMissing ? `<ul class="errs"><li>${P.fmt === "f1" ? "Link at least one machine user to an employee." : "No rows could be read."}</li></ul>` : ""}
+      <div class="row end"><button class="btn" type="button" data-act="att-upclose">Cancel</button><button class="btn pri" type="button" data-act="att-import" ${ok?"":"disabled"}>${ic("check")}Import ${res.recs.length} records</button></div>
+    </div></section>`;
+}
+function otherPanel(){
+  const P = S.ui.attParse, res = buildAtt(), rows = P.sheets[P.sheet][1], H = P.headers, M = P.map;
+  const close = `<button class="ib plain" type="button" data-act="att-upclose" aria-label="Close upload">${ic("x")}</button>`;
   const sel = (k, l, req) => `<label class="f"><span>${l}${req?"":` <span class="muted" style="font-weight:400">(optional)</span>`}</span><select data-attmap="${k}"><option value="">—</option>${H.map((h,i) => `<option value="${i}" ${M[k]===i?"selected":""}>${esc(h)}</option>`).join("")}</select></label>`;
   const ok = res.recs.length > 0;
   return `<section class="card"><div class="card-h"><span class="tile c5">${ic("doc")}</span><h2>${esc(P.file)}<br><span class="small muted" style="font-family:var(--f-body);font-weight:500">${res.total} data rows · ${res.mode === "inout" ? "check-in / check-out per row" : "one row per scan"}</span></h2>${close}</div>
@@ -1644,20 +1816,23 @@ function uploadPanel(){
         <label class="f"><span>Date format in file</span><select id="att-dmy"><option value="1" ${P.dmy?"selected":""}>Day/Month/Year</option><option value="0" ${!P.dmy?"selected":""}>Month/Day/Year</option></select></label></div></div>
       <div class="tw" style="border:1px solid var(--line);border-radius:10px"><table class="t"><thead><tr>${H.map(h => `<th>${esc(h)}</th>`).join("")}</tr></thead><tbody>${rows.slice(P.hi+1, P.hi+5).map(r => `<tr>${H.map((h,i) => `<td>${esc(r[i])}</td>`).join("")}</tr>`).join("")}</tbody></table></div>
       <div class="grid kpis k4">${kpi("Day records", res.recs.length, res.from ? `${fmt(res.from)} – ${fmt(res.to)}` : "—")}${kpi("Employees matched", res.employees, `of ${activeE().length} active`)}${kpi("Unmatched rows", res.unmatched.reduce((s,x) => s + x[1], 0), `${res.unmatched.length} ID(s)`, res.unmatched.length ? "warn" : "")}${kpi("Skipped rows", res.bad, "no readable date", res.bad ? "warn" : "")}</div>
-      ${res.unmatched.length ? `<div class="note warn">${ic("alert")}<div><b>Not matched to any employee:</b> ${res.unmatched.slice(0,12).map(([k,n]) => `${esc(k)} (${n})`).join(", ")}${res.unmatched.length > 12 ? "…" : ""}. These rows will be skipped. Fix the Employee ID on the profile or in the file, then upload again.</div></div>` : ""}
+      ${res.unmatched.length ? `<div class="note warn">${ic("alert")}<div><b>Not matched to any employee:</b> ${res.unmatched.slice(0,12).map(([k,n]) => `${esc(k)} (${n})`).join(", ")}${res.unmatched.length > 12 ? "…" : ""}. These rows will be skipped.</div></div>` : ""}
       ${!ok ? `<ul class="errs"><li>No rows could be read. Check that the Date and Check in (or scan time) columns are selected.</li></ul>` : ""}
       <div class="row end"><button class="btn" type="button" data-act="att-upclose">Cancel</button><button class="btn pri" type="button" data-act="att-import" ${ok?"":"disabled"}>${ic("check")}Import ${res.recs.length} records</button></div>
     </div></section>`;
 }
 async function importAtt(){
-  const P = S.ui.attParse, res = buildAtt(); if(!res.recs.length) return;
+  const P = S.ui.attParse, res = attResult(P); if(!res.recs.length) return;
   const groups = new Map(); for(const r of res.recs){ const k = r.empId + "_" + r.date.slice(0,7); (groups.get(k) || groups.set(k, []).get(k)).push(r); }
-  const now = new Date().toISOString(), log = {id:uid("ai"), file:P.file, by:S.me, at:now, rows:res.total, records:res.recs.length, employees:res.employees, from:res.from, to:res.to, unmatched:res.unmatched.length};
+  const now = new Date().toISOString(), log = {id:uid("ai"), file:P.file, fmt:P.fmt, office:P.office || "", by:S.me, at:now, rows:res.total, records:res.recs.length, employees:res.employees, from:res.from, to:res.to, unmatched:res.unmatched.length};
+  const links = P.fmt === "f1" ? res.machine.filter(m => m.empId && m.mid && String(emp(m.empId)?.attId || "") !== m.mid) : [];
   const ok = await run(async () => {
     for(const [k, list] of groups){ const [empId, month] = k.split("_"); const cur = attDoc(empId, month); const doc = cur ? clone(cur) : {id:k, empId, month, days:{}};
-      for(const r of list) doc.days[r.date] = {in:r.in, out:r.out}; doc.updatedAt = now; doc.importId = log.id; await store.put("attendance", doc); }
-    await store.put("attImports", log); audit("attendance_imported", P.file, `${res.recs.length} records, ${res.from}..${res.to}`);
-  }, `Imported ${res.recs.length} records for ${res.employees} employees.`);
+      for(const r of list){ const d = {in:r.in || "", out:r.out || ""}; for(const f of ["work","brk","n","miss","src","wfh","note"]) if(r[f] !== undefined && r[f] !== "" && r[f] !== false) d[f] = r[f]; doc.days[r.date] = d; }
+      doc.updatedAt = now; doc.importId = log.id; await store.put("attendance", doc); }
+    for(const m of links){ const e = emp(m.empId); if(e) await putEmployee(Object.assign(clone(e), {attId:m.mid})); }
+    await store.put("attImports", log); audit("attendance_imported", P.file, `${ATT_FMT[P.fmt]?.label || P.fmt}${P.office ? " · " + P.office : ""} · ${res.recs.length} records, ${res.from}..${res.to}`);
+  }, `Imported ${res.recs.length} records for ${res.employees} employees.${links.length ? ` Remembered ${links.length} machine ID(s).` : ""}`);
   if(ok){ S.ui.attUp = false; S.ui.attParse = null; S.ui.attMonth = res.to.slice(0,7); render(); }
 }
 async function download(filename, data){
@@ -1668,8 +1843,8 @@ async function download(filename, data){
 const csvCell = v => /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g,'""')}"` : String(v);
 function attCSV(){
   const ym = attMonth(), A = attSummary(attScope(), ym);
-  const head = ["Employee ID","Name","Office","Division","Department","Workdays","Present","Late","Late minutes","Absent","Leave","WFH","Missing punches","Average check-in","Attendance rate %"];
-  const lines = [head].concat(A.rows.map(([e,r]) => [e.empNo, e.name, e.office||"", e.division||"", e.dept, r.expected, r.present, r.late, r.lateMin, r.absent, r.leave, r.wfh, r.missingOut, r.avgIn, r.rate == null ? "" : r.rate.toFixed(1)]));
+  const head = ["Employee ID","Name","Office","Division","Department","Workdays","Present","Late","Late minutes","Absent","Leave","WFH","Missing punches","Average check-in","Hours worked","Break hours","Average hours per day","Average break per day (min)","Attendance rate %"];
+  const lines = [head].concat(A.rows.map(([e,r]) => [e.empNo, e.name, e.office||"", e.division||"", e.dept, r.expected, r.present, r.late, r.lateMin, r.absent, r.leave, r.wfh, r.missingOut, r.avgIn, (r.mins/60).toFixed(2), (r.brk/60).toFixed(2), (r.avgWork/60).toFixed(2), Math.round(r.avgBrk), r.rate == null ? "" : r.rate.toFixed(1)]));
   return lines.map(l => l.map(csvCell).join(",")).join("\n");
 }
 function pAttendance(e){
@@ -1677,10 +1852,11 @@ function pAttendance(e){
   return `<div class="row" style="justify-content:space-between">${monthNav(ym, "att-month")}<span class="small muted">Working hours ${esc(sc.start)}–${esc(sc.end)} · ${Number(sc.grace)||0} min grace</span></div>
   ${!r.hasData ? `<section class="card"><div class="empty"><b>No attendance data for ${monthLabel(ym)}</b>HRD uploads attendance from the attendance machine export.</div></section>` : `
   <div class="grid kpis">${kpi("Attendance rate", r.rate == null ? "—" : r.rate.toFixed(0)+"%", `${r.present + r.wfh} of ${r.expected - r.leave} workdays`)}${kpi("Average check-in", r.avgIn, `start ${esc(sc.start)}`)}
-    ${kpi("Late", r.late, `${r.lateMin} min total`, r.late ? "warn" : "")}${kpi("Absent", r.absent, "unexcused", r.absent ? "warn" : "")}${kpi("Leave · WFH", `${r.leave} · ${r.wfh}`, "approved")}${kpi("Hours worked", (r.mins/60).toFixed(0), "from complete punches")}</div>
-  <section class="card"><div class="card-h"><h2>Daily log</h2></div><div class="tw"><table class="t rt"><thead><tr><th>Date</th><th>Check in</th><th>Check out</th><th class="r">Hours</th><th>Status</th></tr></thead><tbody>
-    ${r.days.map(d => { const h = d.in && d.out ? (toMin(d.out) - toMin(d.in)) / 60 : null; return `<tr><td class="wide"><b style="font-weight:600">${DOWL[parse(d.date).getDay()].slice(0,3)}, ${fmt(d.date)}</b></td><td data-l="In" class="num">${esc(d.in||"—")}</td><td data-l="Out" class="num">${d.out ? esc(d.out) : d.in ? `<span class="down">missing</span>` : "—"}</td>
-      <td data-l="Hours" class="r num">${h != null && h > 0 ? h.toFixed(1) : "—"}</td><td data-l="Status">${attPill(d.status)}${d.type && d.status === "leave" ? ` <span class="small muted">${esc(d.type)}</span>` : ""}</td></tr>`; }).join("")}</tbody></table></div></section>`}`;
+    ${kpi("Late", r.late, `${r.lateMin} min total`, r.late ? "warn" : "")}${kpi("Absent", r.absent, "unexcused", r.absent ? "warn" : "")}${kpi("Leave · WFH", `${r.leave} · ${r.wfh}`, "approved")}${kpi("Hours worked", (r.mins/60).toFixed(1), r.workDays ? `avg ${dur(r.avgWork)} per day` : "breaks excluded")}${kpi("Break time", dur(r.brk), r.workDays ? `avg ${dur(r.avgBrk)} per day` : "")}</div>
+  <section class="card"><div class="card-h"><h2>Daily log</h2></div><div class="tw"><table class="t rt"><thead><tr><th>Date</th><th>Check in</th><th>Check out</th><th class="r">Break</th><th class="r">Worked</th><th>Status</th></tr></thead><tbody>
+    ${r.days.map(d => `<tr><td class="wide"><b style="font-weight:600">${DOWL[parse(d.date).getDay()].slice(0,3)}, ${fmt(d.date)}</b>${d.note ? `<br><span class="small muted">${esc(d.note)}</span>` : ""}</td><td data-l="In" class="num">${esc(d.in||"—")}</td><td data-l="Out" class="num">${d.out ? esc(d.out) : d.in ? `<span class="down">missing</span>` : "—"}</td>
+      <td data-l="Break" class="r num">${d.brk ? dur(d.brk) : d.work != null ? "—" : ""}</td><td data-l="Worked" class="r num">${d.work ? dur(d.work) : "—"}${d.miss && d.n ? ` <span class="small down" title="Odd number of scans (${d.n}) — a scan is missing">!</span>` : ""}</td>
+      <td data-l="Status">${attPill(d.status)}${d.type && d.status === "leave" ? ` <span class="small muted">${esc(d.type)}</span>` : ""}</td></tr>`).join("")}</tbody></table></div></section>`}`;
 }
 
 /* ---------- organization settings ---------- */
@@ -2039,7 +2215,7 @@ function mEmp(){
   const f = (n, l, type="text", cls="") => `<label class="f ${cls}"><span>${l}</span><input type="${type}" name="${n}" value="${esc(dv(k,n,base[n]||""))}"></label>`;
   const ctype = dv(k,"ctype","Probation"), cstart = dv(k,"cstart", dv(k,"joinDate",base.joinDate));
   return `<form data-draft="${k}" data-submit="emp" novalidate><div class="md-h"><span class="tile c1">${ic("user")}</span><h2>${fromCand ? `Hire ${esc(fromCand.name)}` : isNew ? "Add employee" : `Edit ${esc(e0.name)}`}</h2><button class="ib plain" type="button" data-act="close" aria-label="Close">${ic("x")}</button></div>
-  <div class="md-b"><div class="fields">${f("name","Full name","text","full")}${f("empNo","Employee ID")}${f("email","Work email","email")}${f("phone","Phone","tel")}
+  <div class="md-b"><div class="fields">${f("name","Full name","text","full")}${f("empNo","Employee ID")}${f("email","Work email","email")}${f("phone","Phone","tel")}${f("attId","Fingerprint machine ID")}
     <label class="f"><span>Gender</span><select name="gender"><option value="">—</option><option value="F" ${dv(k,"gender",base.gender)==="F"?"selected":""}>Female</option><option value="M" ${dv(k,"gender",base.gender)==="M"?"selected":""}>Male</option></select></label>
     ${f("position","Position")}${orgSelect(k,"dept","Department","departments",base.dept)}${orgSelect(k,"division","Division","divisions",base.division)}${orgSelect(k,"office","Office","offices",base.office)}
     <label class="f"><span>Direct supervisor</span><select name="supervisorId"><option value="">None</option>${E().filter(x => x.id !== e0?.id).map(x => `<option value="${x.id}" ${dv(k,"supervisorId",base.supervisorId||"")===x.id?"selected":""}>${esc(x.name)} — ${esc(x.position)}</option>`).join("")}</select></label>
@@ -2073,13 +2249,14 @@ async function saveEmp(){
   const k = "emp-" + (S.modal.id || S.modal.cand || "new");
   const base = e0 || {name:fromCand?.name||"", email:fromCand?.email||"", phone:fromCand?.phone||"", position:fromCand?.position||"", dept:fromCand?.dept||"", gender:"", role:"employee", jobLevel:"Staff", supervisorId:"", joinDate:addDays(today(),7), status:"Probation", empNo:nextEmpNo()};
   const e = e0 ? clone(e0) : {id:uid("e"), contracts:[], notes:[]};
-  for(const n of ["name","empNo","email","phone","gender","position","dept","supervisorId","role","joinDate","birthDate","status","exitDate","exitReason","office","division","jobLevel"]) e[n] = (dv(k,n,base[n]||"")||"").toString().trim();
+  for(const n of ["name","empNo","email","phone","gender","position","dept","supervisorId","role","joinDate","birthDate","status","exitDate","exitReason","office","division","jobLevel","attId"]) e[n] = (dv(k,n,base[n]||"")||"").toString().trim();
   e.role = roleFor(e.jobLevel, isAdmin() ? !!dv(k,"hrAdmin",base.role==="hrd") : base.role === "hrd");
   if(!e.jobLevel){ S.ui.empErr = "Choose a job level."; render(); return; }
   if(e.status !== "Resigned"){ e.exitDate = ""; e.exitReason = ""; } else if(!e.exitDate){ S.ui.empErr = "Add the last working day for a resigned employee."; render(); return; }
   e.supervisorId = e.supervisorId || null;
   if(!e.name || !e.position || !e.dept || !e.joinDate || !e.office || !e.division){ S.ui.empErr = "Name, position, department, division, office and join date are required."; render(); return; }
   if(E().some(x => x.empNo === e.empNo && x.id !== e.id)){ S.ui.empErr = `Employee ID ${e.empNo} is already used.`; render(); return; }
+  if(e.attId){ const dup = E().find(x => x.id !== e.id && x.office === e.office && String(x.attId || "") === e.attId); if(dup){ S.ui.empErr = `Fingerprint machine ID ${e.attId} in ${e.office} already belongs to ${dup.name}.`; render(); return; } }
   let p = e.supervisorId, hop = 0; while(p && hop++ < 50){ if(p === e.id){ S.ui.empErr = "That supervisor would create a reporting loop."; render(); return; } p = emp(p)?.supervisorId; }
   if(!e0){
     const ctype = dv(k,"ctype","Probation"), cstart = dv(k,"cstart", e.joinDate), cend = ctype === "PKWTT" ? null : dv(k,"cend", addDays(cstart, ctype==="Probation"?90:365));
@@ -2882,7 +3059,9 @@ document.addEventListener("click", async ev => {
     case "att-upclose": S.ui.attUp = false; S.ui.attParse = null; render(); return;
     case "att-import": await importAtt(); return;
     case "att-export": await download(`Attendance_${attMonth()}${S.ui.attOffice?"_"+S.ui.attOffice.replace(/\s+/g,"-"):""}.csv`, attCSV()); return;
-    case "att-template": { const ex = activeE().slice(0,2); await download("Attendance_template.csv", ["Employee ID,Name,Date,Check In,Check Out"].concat(ex.map(e => [e.empNo, e.name, "01/11/2026", "08:25", "17:40"].map(csvCell).join(","))).join("\n")); return; }
+    case "att-template": S.ui.attUp = true; S.ui.attParse = null; render(); return;
+    case "att-fmt": S.ui.attFmt = v; S.ui.attParse = null; render(); return;
+    case "att-tpl": await attTemplate(v); return;
     case "wipe-sample": if(!realAdmin()) return; if(!S.ui.wipe){ S.ui.wipe = true; render(); setTimeout(() => { if(S.ui.wipe){ S.ui.wipe = false; render(); } }, 5000); return; }
       S.ui.wipe = false; await wipeSample(); return;
     case "job-del": if(!isAdmin()) return; { const n = E().filter(e => e.jobLevel === v).length; if(n){ toast(`${n} employee(s) still have the “${v}” level. Change them first.`); return; }
@@ -2933,7 +3112,9 @@ document.addEventListener("change", async ev => {
   if(t.id === "att-file"){ if(t.files?.[0]) readAttFile(t.files[0]); return; }
   if(t.id === "restore-file"){ if(t.files?.[0]) readRestoreFile(t.files[0]); return; }
   if(t.dataset.rsel){ S.ui.restore.sel[t.dataset.rsel] = t.checked; render(); return; }
-  if(t.id === "att-sheet"){ S.ui.attParse.sheet = Number(t.value); autoMap(); render(); return; }
+  if(t.id === "att-sheet"){ S.ui.attParse.sheet = Number(t.value); if(S.ui.attParse.fmt === "other") autoMap(); render(); return; }
+  if(t.id === "att-fmt-office"){ S.ui.attFmtOffice = t.value; render(); return; }
+  if(t.dataset.attassign !== undefined){ S.ui.attParse.assign[t.dataset.attassign] = t.value; render(); return; }
   if(t.id === "att-dmy"){ S.ui.attParse.dmy = t.value === "1"; render(); return; }
   if(t.dataset.attmap){ S.ui.attParse.map[t.dataset.attmap] = t.value === "" ? null : Number(t.value); render(); return; }
   if((t.dataset.org || t.dataset.job !== undefined || t.dataset.jobacc !== undefined || t.classList.contains("flow-add")) && !isAdmin()){ toast("Only Admin can change this setting."); render(); return; }
