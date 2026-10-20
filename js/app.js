@@ -289,7 +289,7 @@ const dv = (k, n, d) => (S.drafts[k] && n in S.drafts[k]) ? S.drafts[k][n] : d;
    rd/<uid>, ph/<uid>   per-person read receipts and self-uploaded profile photo
    audit/<uid>/m/<yyyy-mm>  each person's own monthly audit trail
    requests, notifs, counters   shared working data (Contributors write) */
-const APP_VERSION = "3.4.0", SCHEMA = 2;
+const APP_VERSION = "3.5.0", SCHEMA = 2;
 const PRIVATE_FIELDS = ["phone","gender","birthDate","exitReason","contract","contracts","notes","quotaLog"];
 const SUB_COLS = ["employees","private","requests","candidates","tasks","reviews","reminders","notifs","announcements","attendance","attImports","backups","dec","links","rd","ph","sub"];
 const CORE_COLS = ["employees","requests","tasks","notifs","announcements","attendance"];
@@ -1527,7 +1527,7 @@ function monthNav(ym, act){
 function vAttendance(){
   const ym = attMonth(), list = attScope(), A = attSummary(list, ym), cov = coverage(ym), sc = sched();
   const offices = cfg().offices || [], divs = cfg().divisions || [];
-  const head = `<div class="page-h"><div><h1>Attendance Report</h1><p>Built from the fingerprint machines (F1: Denpasar, Surabaya), daily sheets (F2: Jakarta, PeraONE Xperience) and WFH logs. Worked hours exclude breaks. Working hours ${esc(sc.start)}–${esc(sc.end)}, late after ${Number(sc.grace)||0} minutes grace. Approved leave and WFH are matched automatically.</p></div>
+  const head = `<div class="page-h"><div><h1>Attendance Report</h1><p>Built from the fingerprint machines (F1: Denpasar, Surabaya · F2: Jakarta, PeraONE Xperience), daily sheets and WFH logs. Worked hours exclude breaks. Working hours ${esc(sc.start)}–${esc(sc.end)}, late after ${Number(sc.grace)||0} minutes grace. Approved leave and WFH are matched automatically.</p></div>
     <div class="row"><button class="btn" type="button" data-act="att-template">${ic("doc")}Templates</button><button class="btn" type="button" data-act="att-export" ${A.rows.length?"":"disabled"}>${ic("download")}Export CSV</button>${isHR() ? `<button class="btn pri" type="button" data-act="att-upload">${ic("upload")}Upload Excel</button>` : ""}</div></div>`;
   const filters = `<div class="row" style="justify-content:space-between">${monthNav(ym, "att-month")}<div class="row">
     <select id="att-office" aria-label="Office" style="width:auto"><option value="">All offices</option>${offices.map(o => `<option ${S.ui.attOffice===o?"selected":""}>${esc(o)}</option>`).join("")}</select>
@@ -1613,8 +1613,9 @@ function matchEmp(idv, namev){
    WFH work-from-home log: date, start, end, break minutes and notes; the day counts as WFH.
    other  any spreadsheet, columns matched by hand (one row per day or one row per scan). */
 const ATT_FMT = {
-  f1: {label:"F1 · Fingerprint machine", hint:"Denpasar & Surabaya — the .xls exported by the machine", icon:"fp"},
-  f2: {label:"F2 · Daily attendance sheet", hint:"Jakarta & PeraONE Xperience — one row per person per day", icon:"cal"},
+  f1: {label:"F1 · Fingerprint machine", hint:"Denpasar & Surabaya — machine export (.xls), sheet “Attendance Details”", icon:"fp"},
+  f2: {label:"F2 · Fingerprint machine", hint:"Jakarta & PeraONE Xperience — machine export (.xls), sheet “Attend. Logs”", icon:"fp"},
+  daily: {label:"Daily sheet", hint:"Manual sheet — one row per person per day", icon:"cal"},
   wfh: {label:"WFH log", hint:"Work-from-home days with start, end and break", icon:"home"},
   other: {label:"Other export", hint:"Any spreadsheet — match the columns yourself", icon:"doc"},
 };
@@ -1622,7 +1623,10 @@ const ATT_TPL = {
   f1: {file:"ONEderland_Attendance_F1_Fingerprint.xlsx", sheet:"Attendance Details", head:["No.","Device ID","ID","Name","Att.Type","Att.Time"],
     rows:[[1,1,7,"VANISA","In","2026-11-02 07:58"],[2,1,11,"WULAN","In","2026-11-02 08:21"],[3,1,7,"VANISA","Out","2026-11-02 12:02"],[4,1,7,"VANISA","In","2026-11-02 13:01"],[5,1,11,"WULAN","Out","2026-11-02 12:30"],[6,1,11,"WULAN","In","2026-11-02 13:15"],[7,1,7,"VANISA","Out","2026-11-02 17:05"],[8,1,11,"WULAN","Out","2026-11-02 17:40"]],
     notes:["Upload the machine's own export (.xls) as it is — this template only shows the layout.","ID = the user number on the fingerprint machine (not the HRM Employee ID). The HRM remembers which machine ID belongs to which employee per office.","Each scan is one row. Scans are paired in time order: first scan = check-in, last scan = check-out, the time between an 'out' and the next 'in' counts as break. The In/Out/On/Off labels are ignored because people often press the wrong key.","An odd number of scans on a day is flagged as a missing scan."]},
-  f2: {file:"ONEderland_Attendance_F2_Daily.xlsx", sheet:"Attendance", head:["Employee ID","Name","Date","Check In","Break Start","Break End","Check Out","Break (minutes)","Notes"],
+  f2: {file:"ONEderland_Attendance_F2_Fingerprint.xlsx", sheet:"Attend. Logs", grid:true,
+    head:["Attend. Logs"], rows:[[""],["Date :","","2026-11-02 ~ 2026-11-04"],[2,3,4],["ID :","",3,"","","","","Name :","","nadia","","","","","","Dept. :","","education one"],["07:00\n11:45\n12:41\n16:56","06:58\n12:10\n13:03\n16:47","07:06\n16:48"],[2,3,4],["ID :","",7,"","","","","Name :","","marlyn","","","","","","Dept. :","","education one"],["07:32\n13:05\n13:55\n17:37","","07:32\n13:28\n14:19\n18:06"]],
+    notes:["Upload the machine's own export (.xls) as it is — the sheet “Attend. Logs” is read automatically. This template only shows the layout.","Each person is a block: a row of day numbers, the 'ID : … Name : …' row, then one cell per day with all scan times of that day (one per line).","ID = the user number on that office's fingerprint machine (not the HRM Employee ID). The HRM remembers which machine ID belongs to which employee per office.","Scans are paired in time order: first = check-in, last = check-out, time between an 'out' and the next 'in' = break. An odd number of scans is flagged as a missing scan."]},
+  daily: {file:"ONEderland_Attendance_Daily_Sheet.xlsx", sheet:"Attendance", head:["Employee ID","Name","Date","Check In","Break Start","Break End","Check Out","Break (minutes)","Notes"],
     rows:[["ONE-0001","Example Person","2026-11-02","08:25","12:00","13:00","17:35","",""],["ONE-0001","Example Person","2026-11-03","08:40","","","17:30","60","Break not scanned"],["ONE-0002","Second Person","2026-11-02","09:02","12:30","13:10","18:05","","Client visit in the afternoon"]],
     notes:["One row per person per day. Employee ID = the ID in the HRM (e.g. ONE-0031).","Dates as YYYY-MM-DD or DD/MM/YYYY, times as HH:MM (24-hour).","Break: fill Break Start + Break End, or just Break (minutes). Worked time = Check Out − Check In − break.","Leave Check Out empty if the person didn't check out — it's flagged as a missing scan."]},
   wfh: {file:"ONEderland_Attendance_WFH.xlsx", sheet:"WFH", head:["Employee ID","Name","Date","Start","End","Break (minutes)","Activity / Notes"],
@@ -1632,7 +1636,7 @@ const ATT_TPL = {
 async function attTemplate(kind){
   const T = ATT_TPL[kind]; if(!T) return;
   try { const X = await loadXLSX(), wb = X.utils.book_new();
-    const ws = X.utils.aoa_to_sheet([T.head].concat(T.rows)); ws["!cols"] = T.head.map(h => ({wch:Math.max(12, h.length + 4)})); X.utils.book_append_sheet(wb, ws, T.sheet);
+    const ws = X.utils.aoa_to_sheet([T.head].concat(T.rows)); ws["!cols"] = T.grid ? Array(18).fill({wch:10}) : T.head.map(h => ({wch:Math.max(12, h.length + 4)})); X.utils.book_append_sheet(wb, ws, T.sheet);
     const help = X.utils.aoa_to_sheet([["How to use this template"], [""]].concat(T.notes.map(n => ["• " + n]))); help["!cols"] = [{wch:120}]; X.utils.book_append_sheet(wb, help, "How to use");
     await download(T.file, X.write(wb, {type:"array", bookType:"xlsx"})); }
   catch(e){ toast("The template couldn't be created. Check your connection and try again."); }
@@ -1664,13 +1668,16 @@ const ATT_COLS = {
   note:/^(notes?|activity.*|aktivitas|keterangan|catatan|remark.?s?)$/i,
 };
 function pickAttSheet(P){
-  const want = P.fmt === "f1" ? /attendance\s*details/i : P.fmt === "wfh" ? /wfh/i : /attendance|absen/i;
+  const want = P.fmt === "f1" ? /attendance\s*details/i : P.fmt === "f2" ? /attend\.?\s*logs?/i : P.fmt === "wfh" ? /wfh/i : /attendance|absen/i;
   let best = -1;
   P.sheets.forEach(([n, rows], i) => { if(best < 0 && want.test(n) && attHeader(rows, P.fmt).hi >= 0) best = i; });
   if(best < 0) P.sheets.forEach(([n, rows], i) => { if(best < 0 && attHeader(rows, P.fmt).hi >= 0) best = i; });
   P.sheet = Math.max(0, best);
 }
+const isMachine = f => f === "f1" || f === "f2";
+const f2Row = r => /^id\s*:?$/i.test(String(r[0] ?? "").trim()) && r.some(c => /^name\s*:?$/i.test(String(c).trim()));
 function attHeader(rows, kind){
+  if(kind === "f2") return rows.some(f2Row) ? {hi:0, col:{}} : {hi:-1, col:{}};
   for(let i = 0; i < Math.min(15, rows.length); i++){
     const H = rows[i].map(c => String(c).replace(/\s+/g, " ").trim()), col = {};
     H.forEach((h, j) => { for(const [k, re] of Object.entries(ATT_COLS)) if(col[k] == null && re.test(h)) col[k] = j; });
@@ -1691,20 +1698,44 @@ function attStamp(v, dmy){
   if(typeof v === "number") return {date:parseDateVal(v, dmy), t:parseTimeVal(v)};
   const str = String(v || "").trim(); return {date:parseDateVal(str, dmy), t:parseTimeVal(str.split(/\s+/).slice(1).join(" ") || "")};
 }
+/* F2 machine: "Attend. Logs" grid — per person a row of day numbers, an "ID : … Name : …" row, then one cell per day with that day's scans */
+function f2Punches(rows){
+  const out = []; let range = null, bad = 0;
+  for(const r of rows.slice(0, 8)) for(const c of r){ const m = String(c).match(/(\d{4}-\d{2}-\d{2})\s*~\s*(\d{4}-\d{2}-\d{2})/); if(m && !range) range = [m[1], m[2]]; }
+  if(!range) return {out, bad:1, range:null};
+  const dates = []; for(let d = range[0]; d <= range[1] && dates.length < 400; d = addDays(d, 1)) dates.push(d);
+  for(let i = 0; i < rows.length; i++){
+    const r = rows[i]; if(!f2Row(r)) continue;
+    const after = (re) => { const j = r.findIndex(c => re.test(String(c).trim())); if(j < 0) return ""; for(let k = j + 1; k < r.length; k++){ const v = String(r[k] ?? "").trim(); if(v) return v; } return ""; };
+    const mid = after(/^id\s*:?$/i), name = after(/^name\s*:?$/i);
+    const dayRow = rows[i - 1] || [], cells = rows[i + 1] || [];
+    let p = 0; const colDate = [];
+    for(let j = 0; j < dayRow.length; j++){ const dn = Number(String(dayRow[j]).trim()); if(!dn) continue; while(p < dates.length && Number(dates[p].slice(8)) !== dn) p++; if(p < dates.length){ colDate[j] = dates[p]; p++; } }
+    for(let j = 0; j < cells.length; j++){
+      const raw = cells[j]; if(raw === "" || raw == null) continue;
+      const date = colDate[j]; if(!date){ bad++; continue; }
+      const times = (typeof raw === "number" ? [parseTimeVal(raw)] : String(raw).split(/[\n\r]+|\s{2,}/).map(t => parseTimeVal(t))).filter(t => t != null);
+      if(!times.length){ bad++; continue; }
+      for(const t of times) out.push({mid, name, date, t});
+    }
+  }
+  return {out, bad, range};
+}
 function attOfficePool(office){ return E().filter(e => !e.system && (!office || e.office === office)); }
 function buildStructured(P){
   const rows = P.sheets[P.sheet][1], {hi, col} = attHeader(rows, P.fmt);
   const out = new Map(), unmatched = new Map(), machine = new Map(); let bad = 0, total = 0;
   if(hi < 0) return {recs:[], unmatched:[], machine:[], bad:0, total:0, headerMissing:true};
   const data = rows.slice(hi + 1).filter(r => r.some(c => String(c).trim() !== ""));
-  if(P.fmt === "f1"){
+  if(isMachine(P.fmt)){
     const pool = attOfficePool(P.office), punches = new Map();
-    for(const r of data){
+    const add = (mid, mname, date, t) => { const key = mid || mname; const m = machine.get(key) || {mid, name:mname, scans:0, days:new Set()}; m.scans++; m.days.add(date); machine.set(key, m);
+      const k = key + "|" + date; (punches.get(k) || punches.set(k, []).get(k)).push(t); };
+    if(P.fmt === "f1") for(const r of data){
       total++; const mid = String(r[col.id] ?? "").trim(), mname = String(col.name != null ? r[col.name] : "").trim();
       const st = attStamp(r[col.time], P.dmy); if(!st.date || st.t == null){ bad++; continue; }
-      const key = mid || mname; const m = machine.get(key) || {mid, name:mname, scans:0, days:new Set()}; m.scans++; m.days.add(st.date); machine.set(key, m);
-      const k = key + "|" + st.date; (punches.get(k) || punches.set(k, []).get(k)).push(st.t);
-    }
+      add(mid, mname, st.date, st.t);
+    } else { const g = f2Punches(rows); bad = g.bad; total = g.out.length; for(const x of g.out) add(x.mid, x.name, x.date, x.t); }
     const byName = n => { const nn = normName(n); if(!nn) return null; const hits = pool.filter(e => normName(e.name) === nn || normName(e.name.split(" ")[0]) === nn); return hits.length === 1 ? hits[0] : null; };
     for(const [key, m] of machine){
       const a = P.assign[key];
@@ -1715,7 +1746,7 @@ function buildStructured(P){
     for(const [k, list] of punches){
       const [key, date] = k.split("|"), m = machine.get(key);
       if(!m.empId){ unmatched.set(key, (unmatched.get(key) || 0) + list.length); continue; }
-      const d = dayCalc(list); if(d) out.set(m.empId + "|" + date, Object.assign({empId:m.empId, date, src:"F1"}, d));
+      const d = dayCalc(list); if(d) out.set(m.empId + "|" + date, Object.assign({empId:m.empId, date, src:P.fmt.toUpperCase()}, d));
     }
   } else {
     for(const r of data){
@@ -1729,7 +1760,7 @@ function buildStructured(P){
       const brk = bs != null && be != null && be > bs ? be - bs : bm;
       const work = ti != null && to != null && to > ti ? Math.max(0, to - ti - brk) : 0;
       const note = col.note != null ? String(r[col.note] || "").trim().slice(0, 200) : "";
-      const rec = {empId:e.id, date, in:hhmm(ti), out:hhmm(to), work, brk, n:(ti != null) + (to != null), miss: P.fmt !== "wfh" && (ti == null || to == null), src:P.fmt.toUpperCase()};
+      const rec = {empId:e.id, date, in:hhmm(ti), out:hhmm(to), work, brk, n:(ti != null) + (to != null), miss: P.fmt !== "wfh" && (ti == null || to == null), src:P.fmt === "wfh" ? "WFH" : "SHEET"};
       if(note) rec.note = note; if(P.fmt === "wfh") rec.wfh = true;
       out.set(e.id + "|" + date, rec);
     }
@@ -1769,14 +1800,14 @@ function uploadPanel(){
   const P = S.ui.attParse, af = S.ui.attFmt || "f1", offices = cfg().offices || [];
   const close = `<button class="ib plain" type="button" data-act="att-upclose" aria-label="Close upload">${ic("x")}</button>`;
   if(!P || P.error){
-    const needOffice = af === "f1", off = S.ui.attFmtOffice || "";
+    const needOffice = isMachine(af), off = S.ui.attFmtOffice || "";
     return `<section class="card"><div class="card-h"><span class="tile c5">${ic("upload")}</span><h2>Upload attendance</h2>${close}</div><div class="card-b stack">
       <div class="att-fmts" role="radiogroup" aria-label="File format">${Object.entries(ATT_FMT).map(([k, f]) => `<button type="button" class="att-fmt" role="radio" aria-checked="${af === k}" data-act="att-fmt" data-v="${k}">
         <span class="tile ${af === k ? "c1" : "c5"}">${ic(f.icon)}</span><span><b>${esc(f.label)}</b><span class="small muted">${esc(f.hint)}</span></span></button>`).join("")}</div>
       ${needOffice ? `<label class="f" style="max-width:320px"><span>Which office's machine?</span><select id="att-fmt-office"><option value="">Choose office</option>${offices.map(o => `<option ${off === o ? "selected" : ""}>${esc(o)}</option>`).join("")}</select><small>Machine IDs are matched within this office only.</small></label>` : ""}
       ${ATT_TPL[af] ? `<div><button class="btn sm" type="button" data-act="att-tpl" data-v="${af}">${ic("download")}Download ${esc(ATT_FMT[af].label.split(" · ")[0])} template</button></div>` : ""}
       ${needOffice && !off ? `<div class="note">${ic("info")}<div>Choose the office first, then select the file.</div></div>`
-        : `<label class="drop" id="att-drop"><input type="file" id="att-file" accept=".xlsx,.xls,.csv"><span class="tile c1">${ic("upload")}</span><b>Drop the file here or click to choose</b><span class="small muted">${af === "f1" ? "The machine's export as it is (.xls) — the sheet “Attendance Details” is read automatically." : af === "other" ? "Any export with one row per day (check-in/check-out) or one row per scan." : "Fill in the template above, or any sheet with the same column names."}</span></label>`}
+        : `<label class="drop" id="att-drop"><input type="file" id="att-file" accept=".xlsx,.xls,.csv"><span class="tile c1">${ic("upload")}</span><b>Drop the file here or click to choose</b><span class="small muted">${isMachine(af) ? `The machine's export as it is (.xls) — the sheet “${af === "f1" ? "Attendance Details" : "Attend. Logs"}” is read automatically.` : af === "other" ? "Any export with one row per day (check-in/check-out) or one row per scan." : "Fill in the template above, or any sheet with the same column names."}</span></label>`}
       ${P?.error ? `<ul class="errs"><li>${esc(P.error)}</li></ul>` : ""}
       <p class="small muted">Uploading the same dates again replaces those days for the people in the file.</p></div></section>`;
   }
@@ -1788,19 +1819,19 @@ function uploadPanel(){
   return `<section class="card"><div class="card-h"><span class="tile c5">${ic(ATT_FMT[P.fmt].icon)}</span><h2>${esc(P.file)}<br><span class="small muted" style="font-family:var(--f-body);font-weight:500">${esc(ATT_FMT[P.fmt].label)}${P.office ? " · " + esc(P.office) : ""} · ${res.total} rows</span></h2>${close}</div>
     <div class="card-b stack">
       ${P.sheets.length > 1 ? `<label class="f" style="max-width:260px"><span>Sheet</span><select id="att-sheet">${P.sheets.map(([n],i) => `<option value="${i}" ${P.sheet===i?"selected":""}>${esc(n)}</option>`).join("")}</select></label>` : ""}
-      ${res.headerMissing ? `<ul class="errs"><li>${P.fmt === "f1" ? "This sheet has no “ID / Name / Att.Time” columns. Pick the sheet “Attendance Details”." : "The columns weren't recognised. Use the template's column names (Employee ID, Name, Date, Check In / Start, Check Out / End)."}</li></ul>` : ""}
-      ${P.fmt === "f1" && res.machine.length ? `<div><h3 class="sub">People on the machine</h3><p class="small muted">Each machine user is linked to an employee in ${esc(P.office)}. Links found by machine ID or name are pre-filled — check them once; the HRM remembers the machine ID for next time.</p>
+      ${res.headerMissing ? `<ul class="errs"><li>${P.fmt === "f1" ? "This sheet has no “ID / Name / Att.Time” columns. Pick the sheet “Attendance Details”." : P.fmt === "f2" ? "This sheet has no “ID : … Name : …” blocks. Pick the sheet “Attend. Logs”." : "The columns weren't recognised. Use the template's column names (Employee ID, Name, Date, Check In / Start, Check Out / End)."}</li></ul>` : ""}
+      ${isMachine(P.fmt) && res.machine.length ? `<div><h3 class="sub">People on the machine</h3><p class="small muted">Each machine user is linked to an employee in ${esc(P.office)}. Links found by machine ID or name are pre-filled — check them once; the HRM remembers the machine ID for next time.</p>
         <div class="tw" style="border:1px solid var(--line);border-radius:10px"><table class="t rt"><thead><tr><th>Machine ID</th><th>Name on machine</th><th class="r">Days</th><th>Employee</th></tr></thead><tbody>
         ${res.machine.sort((a,b) => Number(a.mid) - Number(b.mid)).map(m => `<tr><td data-l="Machine ID" class="num">${esc(m.mid || "—")}</td><td data-l="Name">${esc(m.name || "—")}</td><td data-l="Days" class="r num">${m.days}</td>
           <td data-l="Employee"><select data-attassign="${esc(m.key)}" aria-label="Employee for machine user ${esc(m.mid)}"><option value="skip" ${!m.empId ? "selected" : ""}>— not imported —</option>${pool.map(e => `<option value="${e.id}" ${m.empId === e.id ? "selected" : ""}>${esc(e.name)} · ${esc(e.empNo)}</option>`).join("")}</select>${m.how && m.how !== "chosen" ? ` <span class="small muted">matched by ${esc(m.how)}</span>` : ""}</td></tr>`).join("")}</tbody></table></div></div>` : ""}
-      <div class="grid kpis k4">${kpi("Day records", res.recs.length, res.from ? `${fmt(res.from)} – ${fmt(res.to)}` : "—")}${kpi("Employees", res.employees, P.fmt === "f1" ? `of ${pool.length} in ${esc(P.office)}` : `of ${activeE().length} active`)}
+      <div class="grid kpis k4">${kpi("Day records", res.recs.length, res.from ? `${fmt(res.from)} – ${fmt(res.to)}` : "—")}${kpi("Employees", res.employees, isMachine(P.fmt) ? `of ${pool.length} in ${esc(P.office)}` : `of ${activeE().length} active`)}
         ${kpi("Hours · Break", `${Math.round(totW/60)} h · ${Math.round(totB/60)} h`, res.recs.length ? `avg ${dur(totW / res.recs.length)} worked` : "")}${kpi(P.fmt === "wfh" ? "Skipped rows" : "Missing scans", P.fmt === "wfh" ? res.bad : missN, P.fmt === "wfh" ? "no readable date" : "days with an odd number of scans", (P.fmt === "wfh" ? res.bad : missN) ? "warn" : "")}</div>
       ${sample.length ? `<div class="tw" style="border:1px solid var(--line);border-radius:10px"><table class="t rt"><thead><tr><th>Employee</th><th>Date</th><th>In</th><th>Out</th><th class="r">Break</th><th class="r">Worked</th></tr></thead><tbody>
-        ${sample.map(r => `<tr><td data-l="Employee">${esc(nm(r.empId))}</td><td data-l="Date">${fmt(r.date)}</td><td data-l="In" class="num">${esc(r.in || "—")}</td><td data-l="Out" class="num">${r.out ? esc(r.out) : `<span class="down">missing</span>`}</td><td data-l="Break" class="r num">${r.brk ? dur(r.brk) : "—"}</td><td data-l="Worked" class="r num">${dur(r.work)}${r.miss && P.fmt === "f1" ? ` <span class="small down" title="${r.n} scans">!</span>` : ""}</td></tr>`).join("")}</tbody></table></div>
+        ${sample.map(r => `<tr><td data-l="Employee">${esc(nm(r.empId))}</td><td data-l="Date">${fmt(r.date)}</td><td data-l="In" class="num">${esc(r.in || "—")}</td><td data-l="Out" class="num">${r.out ? esc(r.out) : `<span class="down">missing</span>`}</td><td data-l="Break" class="r num">${r.brk ? dur(r.brk) : "—"}</td><td data-l="Worked" class="r num">${dur(r.work)}${r.miss && isMachine(P.fmt) ? ` <span class="small down" title="${r.n} scans">!</span>` : ""}</td></tr>`).join("")}</tbody></table></div>
         <p class="small muted">Showing ${sample.length} of ${res.recs.length} day records.</p>` : ""}
-      ${res.unmatched.length && P.fmt !== "f1" ? `<div class="note warn">${ic("alert")}<div><b>Not matched to any employee:</b> ${res.unmatched.slice(0,12).map(([k,n]) => `${esc(k)} (${n})`).join(", ")}${res.unmatched.length > 12 ? "…" : ""}. These rows are skipped — check the Employee ID.</div></div>` : ""}
+      ${res.unmatched.length && !isMachine(P.fmt) ? `<div class="note warn">${ic("alert")}<div><b>Not matched to any employee:</b> ${res.unmatched.slice(0,12).map(([k,n]) => `${esc(k)} (${n})`).join(", ")}${res.unmatched.length > 12 ? "…" : ""}. These rows are skipped — check the Employee ID.</div></div>` : ""}
       ${res.bad && P.fmt !== "wfh" ? `<p class="small muted">${res.bad} row(s) without a readable date/time were skipped.</p>` : ""}
-      ${!ok && !res.headerMissing ? `<ul class="errs"><li>${P.fmt === "f1" ? "Link at least one machine user to an employee." : "No rows could be read."}</li></ul>` : ""}
+      ${!ok && !res.headerMissing ? `<ul class="errs"><li>${isMachine(P.fmt) ? "Link at least one machine user to an employee." : "No rows could be read."}</li></ul>` : ""}
       <div class="row end"><button class="btn" type="button" data-act="att-upclose">Cancel</button><button class="btn pri" type="button" data-act="att-import" ${ok?"":"disabled"}>${ic("check")}Import ${res.recs.length} records</button></div>
     </div></section>`;
 }
@@ -1825,7 +1856,7 @@ async function importAtt(){
   const P = S.ui.attParse, res = attResult(P); if(!res.recs.length) return;
   const groups = new Map(); for(const r of res.recs){ const k = r.empId + "_" + r.date.slice(0,7); (groups.get(k) || groups.set(k, []).get(k)).push(r); }
   const now = new Date().toISOString(), log = {id:uid("ai"), file:P.file, fmt:P.fmt, office:P.office || "", by:S.me, at:now, rows:res.total, records:res.recs.length, employees:res.employees, from:res.from, to:res.to, unmatched:res.unmatched.length};
-  const links = P.fmt === "f1" ? res.machine.filter(m => m.empId && m.mid && String(emp(m.empId)?.attId || "") !== m.mid) : [];
+  const links = isMachine(P.fmt) ? res.machine.filter(m => m.empId && m.mid && String(emp(m.empId)?.attId || "") !== m.mid) : [];
   const ok = await run(async () => {
     for(const [k, list] of groups){ const [empId, month] = k.split("_"); const cur = attDoc(empId, month); const doc = cur ? clone(cur) : {id:k, empId, month, days:{}};
       for(const r of list){ const d = {in:r.in || "", out:r.out || ""}; for(const f of ["work","brk","n","miss","src","wfh","note"]) if(r[f] !== undefined && r[f] !== "" && r[f] !== false) d[f] = r[f]; doc.days[r.date] = d; }
