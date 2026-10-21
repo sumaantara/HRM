@@ -41,6 +41,17 @@ app changes their access within a minute. A profile set to **Resigned** loses ac
 3. The person clicks **Set my password**, chooses a password and lands in the app — the account is already
    connected to their profile (verified email). Later sign-ins: work email + password, or *Forgot password?*.
 
+### Google Calendar (approved leave)
+
+Every fully approved leave request is added to one shared company Google Calendar as an all-day event ("🌴 Name — Annual Leave", position · division · office, request no., backup person, approver — never the reason). Optional: approved WFH days too (Settings → Notifications → Google Calendar). Handled by the `gcal` Edge Function, which re-reads the request so the calendar always matches the database.
+
+One-time setup (Admin):
+1. Google Cloud Console → create a project → *APIs & Services → Library* → enable **Google Calendar API**.
+2. *IAM & Admin → Service accounts* → create one (e.g. `hrm-calendar`) → *Keys → Add key → JSON* → download the file. Keep it private.
+3. Google Calendar → *Other calendars → + → Create new calendar* (e.g. "ONEderland — Leave") → its *Settings → Share with specific people* → add the service account's email with **Make changes to events**. Copy the **Calendar ID** under *Integrate calendar*.
+4. Supabase → Edge Functions → Secrets: `GOOGLE_SERVICE_ACCOUNT` = the whole JSON file content, `GOOGLE_CALENDAR_ID` = the calendar ID.
+5. Share the calendar (view only) with the people who should see it, then in the HRM: Settings → Notifications → Google Calendar should say **Connected** → *Add approved leave from the last 30 days and upcoming*.
+
 ### Sign-in security
 
 - **Two-step verification (authenticator app, TOTP)** is **required** for the owner, Admin, HRD, GM/Director (job level with GM access) and anyone with Payroll access. It's **optional** for other staff (My Profile → Sign-in security); once someone turns it on it's required for them too.

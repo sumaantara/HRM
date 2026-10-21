@@ -290,7 +290,7 @@ const dv = (k, n, d) => (S.drafts[k] && n in S.drafts[k]) ? S.drafts[k][n] : d;
    rd/<uid>, ph/<uid>   per-person read receipts and self-uploaded profile photo
    audit/<uid>/m/<yyyy-mm>  each person's own monthly audit trail
    requests, notifs, counters   shared working data (Contributors write) */
-const APP_VERSION = "3.8.1", SCHEMA = 2;
+const APP_VERSION = "3.9.0", SCHEMA = 2;
 const PRIVATE_FIELDS = ["phone","gender","birthDate","address","exitReason","contract","contracts","notes","quotaLog"];
 const SUB_COLS = ["employees","private","requests","candidates","tasks","reviews","reminders","notifs","announcements","attendance","attImports","backups","dec","links","rd","ph","sub","payslips","payruns"];
 const CORE_COLS = ["employees","requests","tasks","notifs","announcements","attendance"];
@@ -1171,7 +1171,27 @@ async function decide(id, approve){
     n.push([r.empId, `Step ${r.current} approved by ${nm(S.me)}`, `Your ${typeName(r)} moved to ${nm(nx)}`, "request_step",
       Object.assign({heading:`Step ${r.current} of ${r.steps.length} approved`, intro:`${nm(S.me)} approved your request. It now waits for ${nm(nx)}.`, rows:reqRows(r)}, mine)]); }
   delete S.drafts["dec-"+id]; delete S.ui["err-"+id];
+  if(r.status === "approved") setTimeout(() => gcalSync(r.id), 1500);   // after the save reaches the database
   await run(async () => { await store.put("requests", r); await signDecision(r.id, idx, approve ? "a" : "r"); for(const [to,t,b,kd,ml] of n) await notify(to, t, b, to === r.empId ? "myrequests" : "approvals", r.id, kd, ml); audit(approve ? "request_approved" : "request_rejected", r.no, `step ${idx+1}${note ? " — " + note : ""}`); }, msg);
+}
+/* Google Calendar: approved leave is put on the company's shared calendar by the "gcal" function (it re-reads the request,
+   so the event always matches the database). Fails quietly when the calendar isn't set up. */
+async function gcalSync(id){
+  if(!window.HRM?.gcal || S.mode !== "db") return;
+  try { await window.HRM.gcal("sync", {id}); }
+  catch(e){ if(e?.code !== "gcal_not_configured") { logErr("gcal sync " + (e?.code || "") + " " + (e?.detail || "")); if(isHR()) toast("Approved — but it couldn't be added to Google Calendar (" + (e?.message || "error") + ")."); } }
+}
+function gcalCard(ro){
+  if(!window.HRM?.gcal || S.mode !== "db") return `<div class="note">${ic("info")}<div>Google Calendar sync works on the live site.</div></div>`;
+  const st = S.ui.gcal;
+  if(st === undefined){ S.ui.gcal = null; window.HRM.gcal("status").then(x => { S.ui.gcal = x; }).catch(e => { S.ui.gcal = {configured:e?.code !== "gcal_not_configured", ok:false, error:e?.message || "error"}; }).finally(render); }
+  const badge = !st ? `<span class="pill p-neutral">Checking…</span>` : st.ok ? `<span class="pill p-approved">Connected</span>` : st.configured ? `<span class="pill p-rejected">Error</span>` : `<span class="pill p-pending">Not set up</span>`;
+  return `<div class="card-h" style="border-top:1px solid var(--line)"><span class="tile c3">${ic("cal")}</span><h2>Google Calendar</h2>${badge}</div>
+    <div class="card-b stack"><p class="muted" style="margin:0">Every leave request that is fully approved is added to the company's shared Google Calendar as an all-day event (name, leave type, backup person — never the reason). Rejected or cancelled requests don't appear.</p>
+      ${st?.ok ? `<div class="kv"><div><span>Calendar</span>${esc(st.calendar || "")}</div><div><span>Added by</span><span class="small">${esc(st.account || "")}</span></div></div>` : ""}
+      ${st && !st.ok ? `<div class="note warn">${ic("alert")}<div>${st.configured ? `Google refused the connection: ${esc(st.error || "")}. Check that the calendar is shared with the service account with “Make changes to events”.` : `Not connected yet. Admin adds the Google service account key and calendar ID as Supabase secrets — see the setup steps in the README.`}</div></div>` : ""}
+      <label class="chk"><input type="checkbox" data-cfg="gcal.wfh" ${cfg().gcal?.wfh ? "checked" : ""} ${ro ? "disabled" : ""}><span><b>Also add approved WFH days</b><br><span class="muted small">Shown as “🏠 Name — WFH”.</span></span></label>
+      ${st?.ok && !ro ? `<div class="row"><button class="btn" type="button" data-act="gcal-backfill" ${S.ui.gcalBusy ? "disabled" : ""}>${ic("history")}${S.ui.gcalBusy ? "Adding…" : "Add approved leave from the last 30 days and upcoming"}</button></div>` : ""}</div>`;
 }
 async function cancelReq(id){
   const r0 = S.D.requests.find(x => x.id === id); if(!r0 || r0.empId !== S.me || r0.status !== "pending") return;
@@ -2735,6 +2755,7 @@ function vSettings(){
       ${noMail.length ? `<div class="note warn">${ic("alert")}<div><b>${noMail.length} active employee${noMail.length === 1 ? "" : "s"} without a real work email</b> (${esc(noMail.slice(0, 4).map(e => e.name).join(", "))}${noMail.length > 4 ? "…" : ""}) won't receive emails. Add the email on their profile.</div></div>` : `<div class="note">${ic("check")}<div>Every active employee has a work email on file.</div></div>`}
       <label class="chk"><input type="checkbox" data-cfg="autoInvite" ${autoInvite() ? "checked" : ""} ${ro ? "disabled" : ""}><span><b>Send an invitation automatically when an employee is added</b><br><span class="muted small">New employees (added one by one or imported) and changed emails get an email with a link to set their password and sign in. You can also send or resend it from the profile or System → Accounts.</span></span></label>
       <div class="row"><button class="btn" type="button" data-act="mail-test">${ic("mail")}Send a test email to me</button><span class="small muted">${esc(me()?.email || "No email on your profile")}</span></div></div>
+    ${gcalCard(ro)}
     ${groups.map(g => `<div class="card-h" style="border-top:1px solid var(--line)"><h2>${esc(g)}</h2></div>
       <div class="tw"><table class="t rt nt-t"><thead><tr><th>Event</th><th>Sent to</th><th class="c">In-app</th><th class="c">Email</th></tr></thead><tbody>
       ${Object.entries(NOTIFY).filter(([, d]) => d[5] === g).map(([k, d]) => `<tr><td data-l="Event"><span class="nt-ev"><span class="tile c${d[3]}">${ic(d[2])}</span><b>${esc(d[0])}</b></span></td>
@@ -3369,6 +3390,9 @@ document.addEventListener("click", async ev => {
       S.ui.mfaOff = false; try { await window.HRM.mfa.disable(); audit("mfa_disabled", nm(S.realEmpId), ""); toast("Two-step verification is off."); } catch(e){ toast(e?.message || "Couldn't turn it off."); } render(); return;
     case "mfa-reset": if(!realAdmin()) return; if(S.ui.mfaReset !== id){ S.ui.mfaReset = id; render(); setTimeout(() => { if(S.ui.mfaReset === id){ S.ui.mfaReset = null; render(); } }, 4000); return; }
       S.ui.mfaReset = null; try { await window.HRM.mfa.reset(id); audit("mfa_reset", nm(id), ""); toast(`Two-step verification reset. ${first(id)} sets it up again at the next sign-in.`); S.ui.mfaUsers = null; } catch(e){ toast("Reset failed: " + (e?.message || "server error")); } render(); return;
+    case "gcal-backfill": if(!isHR() || S.ui.gcalBusy) return; S.ui.gcalBusy = true; render();
+      try { const r = await window.HRM.gcal("backfill"); const n = Object.values(r.synced || {}).reduce((a, b) => a + b, 0); toast(`${n} approved request(s) are on Google Calendar${r.failed ? `, ${r.failed} failed` : ""}.`); audit("gcal_backfill", `${n} synced`, r.failed ? `${r.failed} failed` : ""); }
+      catch(e){ toast("Couldn't sync: " + (e?.message || "error")); } S.ui.gcalBusy = false; render(); return;
     case "att-suggest": if(S.ui.attParse){ S.ui.attParse.assign[id] = v; render(); } return;
     case "paytab": S.ui.paytab = v; if(v === "settings") S.ui.payImgLoaded = false; render(); return;
     case "pay-tpl": if(isPayroll()) await payTemplate(); return;
