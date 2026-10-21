@@ -290,7 +290,7 @@ const dv = (k, n, d) => (S.drafts[k] && n in S.drafts[k]) ? S.drafts[k][n] : d;
    rd/<uid>, ph/<uid>   per-person read receipts and self-uploaded profile photo
    audit/<uid>/m/<yyyy-mm>  each person's own monthly audit trail
    requests, notifs, counters   shared working data (Contributors write) */
-const APP_VERSION = "3.8.0", SCHEMA = 2;
+const APP_VERSION = "3.8.1", SCHEMA = 2;
 const PRIVATE_FIELDS = ["phone","gender","birthDate","address","exitReason","contract","contracts","notes","quotaLog"];
 const SUB_COLS = ["employees","private","requests","candidates","tasks","reviews","reminders","notifs","announcements","attendance","attImports","backups","dec","links","rd","ph","sub","payslips","payruns"];
 const CORE_COLS = ["employees","requests","tasks","notifs","announcements","attendance"];
@@ -341,7 +341,7 @@ function rebuild(){
   S.P = priv;
   const phById = Object.fromEntries(R.ph.map(x => [x.id, x]));
   S.D.employees = R.employees.map(p => {
-    const e = priv[p.id] ? Object.assign({}, p, priv[p.id], {id:p.id}) : Object.assign({}, p);
+    const e = priv[p.id] ? Object.assign({}, p, priv[p.id], {id:p.id, rev:p.rev}) : Object.assign({}, p);   // the public record's rev is the edit-conflict version (linking an account bumps only that one)
     const ph = e.userId && phById[e.userId];
     if(ph && (ph.at || "") > (e.photoAt || "")) e.photo = ph.asset || "";
     return e;
