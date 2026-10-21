@@ -290,7 +290,7 @@ const dv = (k, n, d) => (S.drafts[k] && n in S.drafts[k]) ? S.drafts[k][n] : d;
    rd/<uid>, ph/<uid>   per-person read receipts and self-uploaded profile photo
    audit/<uid>/m/<yyyy-mm>  each person's own monthly audit trail
    requests, notifs, counters   shared working data (Contributors write) */
-const APP_VERSION = "3.6.0", SCHEMA = 2;
+const APP_VERSION = "3.7.0", SCHEMA = 2;
 const PRIVATE_FIELDS = ["phone","gender","birthDate","address","exitReason","contract","contracts","notes","quotaLog"];
 const SUB_COLS = ["employees","private","requests","candidates","tasks","reviews","reminders","notifs","announcements","attendance","attImports","backups","dec","links","rd","ph","sub","payslips","payruns"];
 const CORE_COLS = ["employees","requests","tasks","notifs","announcements","attendance"];
@@ -1471,9 +1471,10 @@ function officeCoverage(office, ym){
   if(!from){ const c = coverage(ym); return c ? {from:`${ym}-01`, to:c} : null; }
   return {from, to};
 }
-function computeAtt(e, ym){
-  const sc = sched(), st = toMin(sc.start), en = toMin(sc.end), grace = Number(sc.grace)||0, doc = attDoc(e.id, ym);
-  const r = {hasData:!!doc, expected:0, present:0, late:0, lateMin:0, early:0, missingOut:0, absent:0, leave:0, wfh:0, extra:0, mins:0, brk:0, workDays:0, inSum:0, inN:0, days:[]};
+const otMinDefault = () => { const v = ((S.R.payruns || []).find(x => x.id === "settings") || {}).otMin; return v === "" || v == null ? 30 : Number(v) || 0; };
+function computeAtt(e, ym, otMinDay){
+  const sc = sched(), st = toMin(sc.start), en = toMin(sc.end), grace = Number(sc.grace)||0, doc = attDoc(e.id, ym), otFloor = otMinDay != null ? Number(otMinDay) || 0 : otMinDefault();
+  const r = {hasData:!!doc, expected:0, present:0, late:0, lateMin:0, early:0, missingOut:0, absent:0, leave:0, wfh:0, extra:0, mins:0, brk:0, workDays:0, inSum:0, inN:0, ot:0, otDays:0, days:[]};
   const oc = officeCoverage(e.office, ym); if(!oc) return r;
   const from = oc.from, to = [oc.to, e.exitDate ? addDays(e.exitDate, 0) : "9999"].sort()[0];
   for(let s = from; s <= to; s = addDays(s, 1)){
@@ -1491,6 +1492,8 @@ function computeAtt(e, ym){
       if(wd){ r.present++; if(status === "late"){ r.late++; r.lateMin += i - st; } if(o != null && o < en) r.early++; } else r.extra++;
       if(rec.miss || !rec.out || !rec.in) r.missingOut++;
       r.mins += work; r.brk += Number(rec.brk) || 0; if(work) r.workDays++;
+      // overtime (office scans only): time after the scheduled end on workdays, all worked time on days off; days under the minimum don't count
+      { const ot = !wd ? work : (o != null && rec.in && rec.out && !rec.miss ? Math.max(0, o - en) : 0); if(ot && ot >= otFloor){ r.ot += ot; r.otDays++; } }
       if(i != null){ r.inSum += i; r.inN++; }
     } else if(!wd) continue;
     else if(lv && lv.kind === "leave"){ status = "leave"; r.leave++; }
@@ -1551,11 +1554,11 @@ function vAttendance(){
     <div class="card-b" style="padding-top:0"><div class="legend">${Object.entries({present:"On time", late:"Late", wfh:"WFH", leave:"Leave", absent:"Absent"}).map(([k,l]) => `<span><i style="background:${colors[k]}"></i>${l}</span>`).join("")}</div></div>`, `<span class="tag">Workdays · ${monthLabel(ym)}</span>`);
   const byOff = offices.map(o => { const s = attSummary(list.filter(e => e.office === o), ym); return [o, s.rate == null ? 0 : Math.round(s.rate*10)/10, s.rows.length]; }).filter(x => x[2]);
   const offCard = card("Attendance rate by office", "grid", "c5", `<div class="card-b">${byOff.length ? hbars(byOff.map(x => [x[0], x[1]]), 100, v => v.toFixed(0)+"%") : `<p class="muted small">No office data.</p>`}</div>`);
-  const tbl = `<section class="card"><div class="card-h"><h2>Employees</h2><span class="tag">${A.rows.length} with data</span></div><div class="tw"><table class="t rt"><thead><tr><th>Employee</th><th>Office</th><th class="r">Present</th><th class="r">Late</th><th class="r">Absent</th><th class="r">Leave</th><th class="r">WFH</th><th class="r">Missing</th><th class="r">Avg in</th><th class="r">Hours</th><th class="r">Break</th><th class="r">Rate</th></tr></thead><tbody>
+  const tbl = `<section class="card"><div class="card-h"><h2>Employees</h2><span class="tag">${A.rows.length} with data</span></div><div class="tw"><table class="t rt"><thead><tr><th>Employee</th><th>Office</th><th class="r">Present</th><th class="r">Late</th><th class="r">Absent</th><th class="r">Leave</th><th class="r">WFH</th><th class="r">Missing</th><th class="r">Avg in</th><th class="r">Hours</th><th class="r">Break</th><th class="r" title="After ${esc(sched().end)} on workdays + days off">Overtime</th><th class="r">Rate</th></tr></thead><tbody>
     ${A.rows.sort((a,b) => (a[1].rate ?? 101) - (b[1].rate ?? 101)).map(([e,r]) => `<tr class="click" data-act="open-emp" data-id="${e.id}" data-tab="attendance"><td class="wide">${who(e.id, e.division||e.dept)}</td><td data-l="Office">${esc(e.office||"—")}</td>
       <td data-l="Present" class="r num">${r.present}/${r.expected - r.leave}</td><td data-l="Late" class="r num">${r.late}${r.late?` <span class="small muted">(${r.lateMin}m)</span>`:""}</td><td data-l="Absent" class="r num ${r.absent?"down":""}">${r.absent}</td>
       <td data-l="Leave" class="r num">${r.leave}</td><td data-l="WFH" class="r num">${r.wfh}</td><td data-l="Missing" class="r num">${r.missingOut}</td><td data-l="Avg in" class="r num">${r.avgIn}</td>
-      <td data-l="Hours" class="r num" title="Average ${dur(r.avgWork)} per day">${(r.mins/60).toFixed(1)}</td><td data-l="Break" class="r num" title="Average ${dur(r.avgBrk)} per day">${(r.brk/60).toFixed(1)}</td>
+      <td data-l="Hours" class="r num" title="Average ${dur(r.avgWork)} per day">${(r.mins/60).toFixed(1)}</td><td data-l="Break" class="r num" title="Average ${dur(r.avgBrk)} per day">${(r.brk/60).toFixed(1)}</td><td data-l="Overtime" class="r num" title="${r.otDays} day(s)">${r.ot ? (r.ot/60).toFixed(1) : "—"}</td>
       <td data-l="Rate" class="r num"><b class="${r.rate != null && r.rate < 90 ? "down" : ""}">${r.rate == null ? "—" : r.rate.toFixed(0)+"%"}</b></td></tr>`).join("")}</tbody></table></div>
     ${list.filter(e => !attDoc(e.id, ym) && e.status !== "Resigned").length ? `<div class="card-b small muted" style="border-top:1px solid var(--line)">No data this month for: ${list.filter(e => !attDoc(e.id, ym) && e.status !== "Resigned").map(e => esc(e.name)).join(", ")}. Check that their Employee ID matches the attendance machine.</div>` : ""}</section>`;
   return head + upload + filters + kpis + `<div class="grid split">${chart}${offCard}</div>` + tbl + importLog();
@@ -1601,6 +1604,9 @@ function parseDateVal(v, dmy){
 }
 const digits = v => { const d = String(v ?? "").replace(/\D/g, ""); return d ? String(Number(d)) : ""; };
 const normName = v => String(v ?? "").toLowerCase().replace(/[^a-z]/g, "");
+// attendance-machine names: compared case- and space-insensitive, digits kept ("Siti 2" ≠ "Siti"); one employee may have several (comma-separated)
+const attKey = v => String(v ?? "").toLowerCase().normalize("NFKD").replace(/[^a-z0-9]/g, "");
+const attNames = v => String(v ?? "").split(",").map(attKey).filter(Boolean);
 function matchEmp(idv, namev){
   const id = String(idv ?? "").trim().toUpperCase();
   if(id){ let e = E().find(x => (x.empNo||"").toUpperCase() === id); if(e) return e; const d = digits(id); if(d){ e = E().find(x => digits(x.empNo) === d); if(e) return e; } }
@@ -1624,10 +1630,10 @@ const ATT_FMT = {
 const ATT_TPL = {
   f1: {file:"ONEderland_Attendance_F1_Fingerprint.xlsx", sheet:"Attendance Details", head:["No.","Device ID","ID","Name","Att.Type","Att.Time"],
     rows:[[1,1,7,"VANISA","In","2026-11-02 07:58"],[2,1,11,"WULAN","In","2026-11-02 08:21"],[3,1,7,"VANISA","Out","2026-11-02 12:02"],[4,1,7,"VANISA","In","2026-11-02 13:01"],[5,1,11,"WULAN","Out","2026-11-02 12:30"],[6,1,11,"WULAN","In","2026-11-02 13:15"],[7,1,7,"VANISA","Out","2026-11-02 17:05"],[8,1,11,"WULAN","Out","2026-11-02 17:40"]],
-    notes:["Upload the machine's own export (.xls) as it is — this template only shows the layout.","ID = the user number on the fingerprint machine (not the HRM Employee ID). The HRM remembers which machine ID belongs to which employee per office.","Each scan is one row. Scans are paired in time order: first scan = check-in, last scan = check-out, the time between an 'out' and the next 'in' counts as break. The In/Out/On/Off labels are ignored because people often press the wrong key.","An odd number of scans on a day is flagged as a missing scan."]},
+    notes:["Upload the machine's own export (.xls) as it is — this template only shows the layout.","Name = the name on the fingerprint machine. It's matched to the “Name on attendance machine” on each profile in that office (the machine ID isn't used, because every machine starts at 1).","Each scan is one row. Scans are paired in time order: first scan = check-in, last scan = check-out, the time between an 'out' and the next 'in' counts as break. The In/Out/On/Off labels are ignored because people often press the wrong key.","An odd number of scans on a day is flagged as a missing scan."]},
   f2: {file:"ONEderland_Attendance_F2_Fingerprint.xlsx", sheet:"Attend. Logs", grid:true,
     head:["Attend. Logs"], rows:[[""],["Date :","","2026-11-02 ~ 2026-11-04"],[2,3,4],["ID :","",3,"","","","","Name :","","nadia","","","","","","Dept. :","","education one"],["07:00\n11:45\n12:41\n16:56","06:58\n12:10\n13:03\n16:47","07:06\n16:48"],[2,3,4],["ID :","",7,"","","","","Name :","","marlyn","","","","","","Dept. :","","education one"],["07:32\n13:05\n13:55\n17:37","","07:32\n13:28\n14:19\n18:06"]],
-    notes:["Upload the machine's own export (.xls) as it is — the sheet “Attend. Logs” is read automatically. This template only shows the layout.","Each person is a block: a row of day numbers, the 'ID : … Name : …' row, then one cell per day with all scan times of that day (one per line).","ID = the user number on that office's fingerprint machine (not the HRM Employee ID). The HRM remembers which machine ID belongs to which employee per office.","Scans are paired in time order: first = check-in, last = check-out, time between an 'out' and the next 'in' = break. An odd number of scans is flagged as a missing scan."]},
+    notes:["Upload the machine's own export (.xls) as it is — the sheet “Attend. Logs” is read automatically. This template only shows the layout.","Each person is a block: a row of day numbers, the 'ID : … Name : …' row, then one cell per day with all scan times of that day (one per line).","Name = the name on that office's fingerprint machine, matched to the “Name on attendance machine” on each profile in that office (machine IDs aren't used — every machine starts at 1).","Scans are paired in time order: first = check-in, last = check-out, time between an 'out' and the next 'in' = break. An odd number of scans is flagged as a missing scan."]},
   daily: {file:"ONEderland_Attendance_Daily_Sheet.xlsx", sheet:"Attendance", head:["Employee ID","Name","Date","Check In","Break Start","Break End","Check Out","Break (minutes)","Notes"],
     rows:[["ONE-0001","Example Person","2026-11-02","08:25","12:00","13:00","17:35","",""],["ONE-0001","Example Person","2026-11-03","08:40","","","17:30","60","Break not scanned"],["ONE-0002","Second Person","2026-11-02","09:02","12:30","13:10","18:05","","Client visit in the afternoon"]],
     notes:["One row per person per day. Employee ID = the ID in the HRM (e.g. ONE-0031).","Dates as YYYY-MM-DD or DD/MM/YYYY, times as HH:MM (24-hour).","Break: fill Break Start + Break End, or just Break (minutes). Worked time = Check Out − Check In − break.","Leave Check Out empty if the person didn't check out — it's flagged as a missing scan."]},
@@ -1738,18 +1744,26 @@ function buildStructured(P){
       const st = attStamp(r[col.time], P.dmy); if(!st.date || st.t == null){ bad++; continue; }
       add(mid, mname, st.date, st.t);
     } else { const g = f2Punches(rows); bad = g.bad; total = g.out.length; for(const x of g.out) add(x.mid, x.name, x.date, x.t); }
-    const byName = n => { const nn = normName(n); if(!nn) return null; const hits = pool.filter(e => normName(e.name) === nn || normName(e.name.split(" ")[0]) === nn); return hits.length === 1 ? hits[0] : null; };
+    // Match by the "Name on attendance machine" set on each profile, within the office of this machine (machine IDs restart at 1 on every machine,
+    // so they are never used). Exact full name is the only fallback; anything else is only a suggestion for HR to confirm.
+    const live = pool.filter(e => e.status !== "Resigned");
     for(const [key, m] of machine){
-      const a = P.assign[key];
-      const byId = m.mid ? pool.find(e => String(e.attId || "") === m.mid) : null;
-      const auto = byId || (a === undefined ? byName(m.name) : null);
-      m.empId = a === "skip" ? null : (a || auto?.id || null); m.how = a ? "chosen" : byId ? "machine ID" : auto ? "name" : "";
+      const a = P.assign[key], k = attKey(m.name);
+      const byAtt = k ? live.filter(e => attNames(e.attName).includes(k)) : [];
+      const byFull = k && !byAtt.length ? live.filter(e => attKey(e.name) === k) : [];
+      const auto = byAtt.length === 1 ? byAtt[0] : byFull.length === 1 ? byFull[0] : null;
+      m.conflict = byAtt.length > 1 ? byAtt.map(e => e.name) : null;
+      m.suggest = !auto && !m.conflict && k ? (live.filter(e => !attNames(e.attName).length && (attKey(e.name.split(" ")[0]) === k || attKey(e.name).startsWith(k))).length === 1 ? live.find(e => !attNames(e.attName).length && (attKey(e.name.split(" ")[0]) === k || attKey(e.name).startsWith(k))) : null) : null;
+      m.empId = a === "skip" ? null : (a || auto?.id || null); m.how = a ? "chosen" : byAtt.length === 1 ? "attendance name" : auto ? "full name" : "";
     }
+    // several machine users can belong to one person (e.g. re-enrolled): their scans are merged per day
+    const per = new Map();
     for(const [k, list] of punches){
       const [key, date] = k.split("|"), m = machine.get(key);
       if(!m.empId){ unmatched.set(key, (unmatched.get(key) || 0) + list.length); continue; }
-      const d = dayCalc(list); if(d) out.set(m.empId + "|" + date, Object.assign({empId:m.empId, date, src:P.fmt.toUpperCase()}, d));
+      const pk = m.empId + "|" + date; (per.get(pk) || per.set(pk, []).get(pk)).push(...list);
     }
+    for(const [pk, list] of per){ const [empId, date] = pk.split("|"); const d = dayCalc(list); if(d) out.set(pk, Object.assign({empId, date, src:P.fmt.toUpperCase()}, d)); }
   } else {
     for(const r of data){
       total++; const idv = col.id != null ? r[col.id] : "", namev = col.name != null ? r[col.name] : "";
@@ -1822,10 +1836,10 @@ function uploadPanel(){
     <div class="card-b stack">
       ${P.sheets.length > 1 ? `<label class="f" style="max-width:260px"><span>Sheet</span><select id="att-sheet">${P.sheets.map(([n],i) => `<option value="${i}" ${P.sheet===i?"selected":""}>${esc(n)}</option>`).join("")}</select></label>` : ""}
       ${res.headerMissing ? `<ul class="errs"><li>${P.fmt === "f1" ? "This sheet has no “ID / Name / Att.Time” columns. Pick the sheet “Attendance Details”." : P.fmt === "f2" ? "This sheet has no “ID : … Name : …” blocks. Pick the sheet “Attend. Logs”." : "The columns weren't recognised. Use the template's column names (Employee ID, Name, Date, Check In / Start, Check Out / End)."}</li></ul>` : ""}
-      ${isMachine(P.fmt) && res.machine.length ? `<div><h3 class="sub">People on the machine</h3><p class="small muted">Each machine user is linked to an employee in ${esc(P.office)}. Links found by machine ID or name are pre-filled — check them once; the HRM remembers the machine ID for next time.</p>
+      ${isMachine(P.fmt) && res.machine.length ? `<div><h3 class="sub">People on the machine</h3><p class="small muted">Machine users are linked by the <b>name on the attendance machine</b> set on each profile in ${esc(P.office)} (machine IDs aren't used — every machine starts at 1). Pick the employee for anyone not linked; the HRM saves that name on the profile so it's automatic next time.</p>
         <div class="tw" style="border:1px solid var(--line);border-radius:10px"><table class="t rt"><thead><tr><th>Machine ID</th><th>Name on machine</th><th class="r">Days</th><th>Employee</th></tr></thead><tbody>
-        ${res.machine.sort((a,b) => Number(a.mid) - Number(b.mid)).map(m => `<tr><td data-l="Machine ID" class="num">${esc(m.mid || "—")}</td><td data-l="Name">${esc(m.name || "—")}</td><td data-l="Days" class="r num">${m.days}</td>
-          <td data-l="Employee"><select data-attassign="${esc(m.key)}" aria-label="Employee for machine user ${esc(m.mid)}"><option value="skip" ${!m.empId ? "selected" : ""}>— not imported —</option>${pool.map(e => `<option value="${e.id}" ${m.empId === e.id ? "selected" : ""}>${esc(e.name)} · ${esc(e.empNo)}</option>`).join("")}</select>${m.how && m.how !== "chosen" ? ` <span class="small muted">matched by ${esc(m.how)}</span>` : ""}</td></tr>`).join("")}</tbody></table></div></div>` : ""}
+        ${res.machine.sort((a,b) => (!!a.empId - !!b.empId) || String(a.name).localeCompare(String(b.name))).map(m => `<tr><td data-l="Machine ID" class="num">${esc(m.mid || "—")}</td><td data-l="Name">${esc(m.name || "—")}</td><td data-l="Days" class="r num">${m.days}</td>
+          <td data-l="Employee"><select data-attassign="${esc(m.key)}" aria-label="Employee for machine user ${esc(m.name || m.mid)}"><option value="skip" ${!m.empId ? "selected" : ""}>— not imported —</option>${pool.map(e => `<option value="${e.id}" ${m.empId === e.id ? "selected" : ""}>${esc(e.name)} · ${esc(e.empNo)}</option>`).join("")}</select>${m.how && m.how !== "chosen" ? ` <span class="small muted">matched by ${esc(m.how)}</span>` : ""}${m.conflict ? `<div class="small" style="color:var(--bad)">“${esc(m.name)}” is set on ${m.conflict.map(esc).join(" and ")} — make the attendance names unique.</div>` : ""}${!m.empId && m.suggest ? ` <button class="btn sm link" type="button" data-act="att-suggest" data-id="${esc(m.key)}" data-v="${esc(m.suggest.id)}">Use ${esc(m.suggest.name)}?</button>` : ""}</td></tr>`).join("")}</tbody></table></div></div>` : ""}
       <div class="grid kpis k4">${kpi("Day records", res.recs.length, res.from ? `${fmt(res.from)} – ${fmt(res.to)}` : "—")}${kpi("Employees", res.employees, isMachine(P.fmt) ? `of ${pool.length} in ${esc(P.office)}` : `of ${activeE().length} active`)}
         ${kpi("Hours · Break", `${Math.round(totW/60)} h · ${Math.round(totB/60)} h`, res.recs.length ? `avg ${dur(totW / res.recs.length)} worked` : "")}${kpi(P.fmt === "wfh" ? "Skipped rows" : "Missing scans", P.fmt === "wfh" ? res.bad : missN, P.fmt === "wfh" ? "no readable date" : "days with an odd number of scans", (P.fmt === "wfh" ? res.bad : missN) ? "warn" : "")}</div>
       ${sample.length ? `<div class="tw" style="border:1px solid var(--line);border-radius:10px"><table class="t rt"><thead><tr><th>Employee</th><th>Date</th><th>In</th><th>Out</th><th class="r">Break</th><th class="r">Worked</th></tr></thead><tbody>
@@ -1858,14 +1872,14 @@ async function importAtt(){
   const P = S.ui.attParse, res = attResult(P); if(!res.recs.length) return;
   const groups = new Map(); for(const r of res.recs){ const k = r.empId + "_" + r.date.slice(0,7); (groups.get(k) || groups.set(k, []).get(k)).push(r); }
   const now = new Date().toISOString(), log = {id:uid("ai"), file:P.file, fmt:P.fmt, office:P.office || "", by:S.me, at:now, rows:res.total, records:res.recs.length, employees:res.employees, from:res.from, to:res.to, unmatched:res.unmatched.length};
-  const links = isMachine(P.fmt) ? res.machine.filter(m => m.empId && m.mid && String(emp(m.empId)?.attId || "") !== m.mid) : [];
+  const links = isMachine(P.fmt) ? res.machine.filter(m => m.empId && attKey(m.name) && !attNames(emp(m.empId)?.attName).includes(attKey(m.name))) : [];
   const ok = await run(async () => {
     for(const [k, list] of groups){ const [empId, month] = k.split("_"); const cur = attDoc(empId, month); const doc = cur ? clone(cur) : {id:k, empId, month, days:{}};
       for(const r of list){ const d = {in:r.in || "", out:r.out || ""}; for(const f of ["work","brk","n","miss","src","wfh","note"]) if(r[f] !== undefined && r[f] !== "" && r[f] !== false) d[f] = r[f]; doc.days[r.date] = d; }
       doc.updatedAt = now; doc.importId = log.id; await store.put("attendance", doc); }
-    for(const m of links){ const e = emp(m.empId); if(e) await putEmployee(Object.assign(clone(e), {attId:m.mid})); }
+    for(const m of links){ const e = emp(m.empId); if(e) await putEmployee(Object.assign(clone(e), {attName:[e.attName, m.name.trim()].filter(Boolean).join(", ")})); }
     await store.put("attImports", log); audit("attendance_imported", P.file, `${ATT_FMT[P.fmt]?.label || P.fmt}${P.office ? " · " + P.office : ""} · ${res.recs.length} records, ${res.from}..${res.to}`);
-  }, `Imported ${res.recs.length} records for ${res.employees} employees.${links.length ? ` Remembered ${links.length} machine ID(s).` : ""}`);
+  }, `Imported ${res.recs.length} records for ${res.employees} employees.${links.length ? ` Saved ${links.length} attendance name(s) on profiles.` : ""}`);
   if(ok){ S.ui.attUp = false; S.ui.attParse = null; S.ui.attMonth = res.to.slice(0,7); render(); }
 }
 async function download(filename, data){
@@ -1876,8 +1890,8 @@ async function download(filename, data){
 const csvCell = v => /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g,'""')}"` : String(v);
 function attCSV(){
   const ym = attMonth(), A = attSummary(attScope(), ym);
-  const head = ["Employee ID","Name","Office","Division","Department","Workdays","Present","Late","Late minutes","Absent","Leave","WFH","Missing punches","Average check-in","Hours worked","Break hours","Average hours per day","Average break per day (min)","Attendance rate %"];
-  const lines = [head].concat(A.rows.map(([e,r]) => [e.empNo, e.name, e.office||"", e.division||"", e.dept, r.expected, r.present, r.late, r.lateMin, r.absent, r.leave, r.wfh, r.missingOut, r.avgIn, (r.mins/60).toFixed(2), (r.brk/60).toFixed(2), (r.avgWork/60).toFixed(2), Math.round(r.avgBrk), r.rate == null ? "" : r.rate.toFixed(1)]));
+  const head = ["Employee ID","Name","Office","Division","Department","Workdays","Present","Late","Late minutes","Absent","Leave","WFH","Missing punches","Average check-in","Hours worked","Break hours","Average hours per day","Average break per day (min)","Overtime hours","Attendance rate %"];
+  const lines = [head].concat(A.rows.map(([e,r]) => [e.empNo, e.name, e.office||"", e.division||"", e.dept, r.expected, r.present, r.late, r.lateMin, r.absent, r.leave, r.wfh, r.missingOut, r.avgIn, (r.mins/60).toFixed(2), (r.brk/60).toFixed(2), (r.avgWork/60).toFixed(2), Math.round(r.avgBrk), (r.ot/60).toFixed(2), r.rate == null ? "" : r.rate.toFixed(1)]));
   return lines.map(l => l.map(csvCell).join(",")).join("\n");
 }
 function pAttendance(e){
@@ -1916,7 +1930,7 @@ function pPayslips(e){
   const list = mySlips(e.id), self = e.id === S.me;
   return `<section class="card"><div class="card-h"><span class="tile c5">${ic("doc")}</span><h2>Payslips</h2><span class="tag">${list.length}</span></div>
     <div class="card-b"><div class="note">${ic("shield")}<div>${self ? PW_HINT : `Only ${esc(first(e.id))} and payroll can open these. The PDF password is ${esc(first(e.id))}'s date of birth (DDMMYYYY).`}</div></div></div>
-    ${list.length ? `<div class="tw"><table class="t rt"><thead><tr><th>Period</th><th>Payslip no.</th><th>Pay date</th><th class="r">Take home pay</th><th></th></tr></thead><tbody>
+    ${list.length ? `<div class="tw"><table class="t rt pay-t"><thead><tr><th>Period</th><th>Payslip no.</th><th>Pay date</th><th class="r">Take home pay</th><th></th></tr></thead><tbody>
       ${list.map(x => `<tr><td class="wide"><b style="font-weight:600">${esc(periodLabel(x.period))}</b>${x.version > 1 ? ` <span class="tag">revised</span>` : ""}</td><td data-l="No" class="small">${esc(x.no || "—")}</td><td data-l="Pay date">${fmt(x.payDate)}</td>
         <td data-l="Take home" class="r num"><b>${rp(x.takeHome)}</b></td><td class="r"><button class="btn sm pri" type="button" data-act="slip-dl" data-id="${esc(x.id)}">${ic("download")}Download PDF</button></td></tr>`).join("")}</tbody></table></div>`
     : `<div class="empty"><b>No payslips yet</b>${self ? "Your payslip appears here as soon as Finance publishes it — you'll also get a notification." : "Nothing published for this person yet."}</div>`}</section>`;
@@ -1929,7 +1943,7 @@ function vPayroll(){
   if(!isPayroll()) return `<div class="card empty">Payroll is only available to Finance, HRD and Admin.</div>`;
   const tab = S.ui.paytab || "runs";
   const head = `<div class="page-h"><div><h1>Payroll</h1><p>Upload the month's salary sheet, check it, and publish password-protected payslips to every employee's profile. Employees download them from My Payslips.</p></div>
-    <div class="row"><button class="btn" type="button" data-act="pay-tpl">${ic("doc")}Salary template</button><button class="btn pri" type="button" data-act="pay-upload">${ic("upload")}Upload salaries</button></div></div>`;
+    <div class="row"><label class="f" style="width:170px;margin:0"><span class="small">Salary month</span><input type="month" id="pay-tpl-month" value="${esc(payMonth())}"></label><button class="btn" type="button" data-act="pay-tpl" title="Salary sheet for ${esc(periodLabel(payMonth()))} with each person's attendance recap">${ic("doc")}Salary template</button><button class="btn pri" type="button" data-act="pay-upload">${ic("upload")}Upload salaries</button></div></div>`;
   const tabs = `<section class="card"><div class="tabs" role="tablist" style="padding:0 14px">${[["runs","Payslips"],["settings","Payslip layout"]].map(([k,l]) => `<button type="button" role="tab" data-act="paytab" data-v="${k}" aria-selected="${tab===k}">${l}</button>`).join("")}</div>`;
   return head + (S.ui.payUp ? payUploadPanel() : "") + tabs + (tab === "settings" ? paySettingsBody() : payRunsBody()) + `</section>`;
 }
@@ -1941,7 +1955,7 @@ function payRunsBody(){
   const tot = k => list.reduce((s, x) => s + (Number(x[k]) || 0), 0);
   return `<div class="card-b row" style="justify-content:space-between"><label class="f" style="max-width:240px"><span>Period</span><select id="pay-period">${periods.map(p => `<option value="${p}" ${p===sel?"selected":""}>${esc(periodLabel(p))}</option>`).join("")}</select></label>
       <div class="grid kpis k4" style="flex:1;max-width:760px">${kpi("Payslips", list.length, esc(periodLabel(sel)))}${kpi("Total income", rpk(tot("gross")), "gross")}${kpi("Deductions", rpk(tot("deductions")), "BPJS, tax, loans")}${kpi("Take home", rpk(tot("takeHome")), "paid out")}</div></div>
-    <div class="tw"><table class="t rt"><thead><tr><th>Employee</th><th>Payslip no.</th><th class="r">Income</th><th class="r">Deductions</th><th class="r">Take home</th><th>Issued</th><th></th></tr></thead><tbody>
+    <div class="tw"><table class="t rt pay-t"><thead><tr><th>Employee</th><th>Payslip no.</th><th class="r">Income</th><th class="r">Deductions</th><th class="r">Take home</th><th>Issued</th><th></th></tr></thead><tbody>
     ${list.map(x => `<tr><td class="wide">${who(x.empId, emp(x.empId)?.division || "")}</td><td data-l="No" class="small">${esc(x.no || "")}</td><td data-l="Income" class="r num">${rp(x.gross)}</td><td data-l="Deductions" class="r num">${rp(x.deductions)}</td>
       <td data-l="Take home" class="r num"><b>${rp(x.takeHome)}</b></td><td data-l="Issued" class="small muted">${fmt(String(x.issuedAt || "").slice(0,10))}${x.version > 1 ? ` · v${x.version}` : ""}</td><td class="r"><button class="btn sm" type="button" data-act="slip-dl" data-id="${esc(x.id)}">${ic("download")}PDF</button></td></tr>`).join("")}</tbody></table></div>`;
 }
@@ -1955,28 +1969,47 @@ function paySettingsBody(){
     <div class="fields">${t("company","Company name","Shown when no letterhead is uploaded and in the footer.")}${t("prefix","Payslip number format","Numbers look like 106/<b>SK-PAYSLIP/OE</b>/VII/2026 when the sheet leaves “Payslip No” empty.")}
       ${t("signerName","Signed by (name)","e.g. the Accounting lead")}${t("signerTitle","Signer title","Printed above the signature, e.g. Accounting")}</div>
     <div class="fields">${t("income","Income items","Comma-separated, in payslip order. The salary template uses these as columns.")}${t("deduction","Deduction items","Comma-separated.")}</div>
+    <div class="fields">${t("otRate","Overtime rate per hour (Rp)","Pre-fills the Overtime column of the salary sheet: overtime hours × rate. Leave empty to fill it yourself.")}${t("otMin","Minimum overtime per day (minutes)","Days with less overtime than this don't count. Default 30.")}</div>
     <div class="fields">${t("divisions","Divisions printed on the payslip","Comma-separated checkboxes, e.g. Pera ONE Villa, Education ONE, ONEderland Consulting, English Cafe, NeurONE Recruitment, ONEderland Enterprise. Leave empty to use the HRM divisions. The employee's division (or the sheet's Division column) is ticked.")}</div>
     <div class="fields">${pic("letterhead","Letterhead (full width)","Top banner with logo and company name, about 1300 × 260 px.")}${pic("stamp","Company stamp","Official stamp (cap perusahaan).")}${pic("signature","Authorised signature","Signature of the person named above.")}</div>
     <div class="row"><button class="btn" type="button" data-act="pay-preview-sample">${ic("doc")}Preview a payslip</button><span class="small muted">Uses the first employee and sample amounts — nothing is published.</span></div></div>`;
 }
 async function savePaySet(k, v){
   const cur = Object.assign({id:"settings"}, (S.R.payruns || []).find(x => x.id === "settings") || {});
-  cur[k] = (k === "income" || k === "deduction" || k === "divisions") ? String(v).split(",").map(x => x.trim()).filter(Boolean).slice(0, 12) : String(v).trim().slice(0, 120);
+  cur[k] = (k === "income" || k === "deduction" || k === "divisions") ? String(v).split(",").map(x => x.trim()).filter(Boolean).slice(0, 12)
+    : (k === "otRate" || k === "otMin") ? (String(v).trim() === "" ? "" : Math.max(0, Number(String(v).replace(/[^\d.]/g, "")) || 0)) : String(v).trim().slice(0, 120);
   await run(async () => { await S.db.collection("payruns").doc("settings").set(cur); localPut("payruns", cur); audit("payslip_settings_changed", k, ""); }, "Saved.");
 }
 async function savePaySetRaw(k, v){
   const cur = Object.assign({id:"settings"}, (S.R.payruns || []).find(x => x.id === "settings") || {}); cur[k] = v;
   await S.db.collection("payruns").doc("settings").set(cur); localPut("payruns", cur); audit("payslip_settings_changed", k, "image");
 }
+// salary month: chosen on the page, else the latest month with attendance data, else this month
+function payMonth(){ if(!S.ui.payMonth){ const ms = monthsWithData(); S.ui.payMonth = ms[ms.length-1] || today().slice(0,7); } return S.ui.payMonth; }
+const ATT_RECAP = ["Office","Work days","Present","Late","Absent","Leave","WFH","Work hours","Overtime hours"];
+// attendance recap for the salary sheet — same numbers as the Attendance report
+function payRecap(e, ym){
+  const c = paySet(), a = computeAtt(e, ym, c.otMin === "" || c.otMin == null ? 30 : Number(c.otMin));
+  const h = m => Math.round(m / 60 * 100) / 100, rate = Number(c.otRate) || 0;
+  return {has:a.hasData || a.wfh > 0, row:[e.office || "", a.expected, a.present, a.late, a.absent, a.leave, a.wfh, h(a.mins), h(a.ot)], ot:h(a.ot), otPay: rate && a.ot ? Math.round(h(a.ot) * rate) : 0};
+}
 async function payTemplate(){
-  const c = paySet();
+  const c = paySet(), ym = payMonth(), oti = c.income.findIndex(k => /overtime|lembur/i.test(k));
   try { const X = await loadXLSX(), wb = X.utils.book_new();
-    const head = ["Employee ID","Name","Payslip No","Division"].concat(c.income, c.deduction);
-    const rows = activeE().filter(e => !e.system).sort((a,b) => a.name.localeCompare(b.name)).map(e => [e.empNo, e.name, "", ""].concat(c.income.map(() => ""), c.deduction.map(() => "")));
-    const ws = X.utils.aoa_to_sheet([head].concat(rows)); ws["!cols"] = head.map(h => ({wch:Math.max(12, h.length + 3)})); X.utils.book_append_sheet(wb, ws, "Salaries");
-    const help = X.utils.aoa_to_sheet([["How to fill the salary sheet"],[""],["• One row per employee. Employee ID must match the HRM (it's pre-filled for all active employees)."],["• Amounts in rupiah without “Rp” or dots, e.g. 10500000 (decimals with a point: 2101595.15). Leave empty or 0 for none."],["• Payslip No is optional — leave it empty to number automatically (e.g. 106/" + c.prefix + "/VII/2026)."],["• Division is optional — leave it empty to use the division on the employee's profile."],["• Choose the month and pay date in the HRM when uploading. Uploading the same month again replaces those payslips (marked revised)."],["• Each payslip PDF is protected with the employee's date of birth (DDMMYYYY). Employees without a date of birth on their profile are skipped."]]);
+    const head = ["Employee ID","Name","Payslip No","Division"].concat(c.income, c.deduction, ATT_RECAP.map(h => h + " (info)"));
+    const list = activeE().filter(e => !e.system && e.joinDate <= `${ym}-31` && (!e.exitDate || e.exitDate >= `${ym}-01`)).sort((a,b) => a.name.localeCompare(b.name));
+    let withAtt = 0;
+    const rows = list.map(e => { const R = payRecap(e, ym); if(R.has) withAtt++;
+      return [e.empNo, e.name, "", ""].concat(c.income.map((_, i) => i === oti && R.otPay ? R.otPay : ""), c.deduction.map(() => ""), R.has ? R.row : [e.office || ""].concat(ATT_RECAP.slice(1).map(() => ""))); });
+    const ws = X.utils.aoa_to_sheet([["Salary month", ym, periodLabel(ym)], []].concat([head], rows)); ws["!cols"] = head.map(h => ({wch:Math.max(12, h.length + 3)})); X.utils.book_append_sheet(wb, ws, "Salaries");
+    const help = X.utils.aoa_to_sheet([["How to fill the salary sheet"],[""],["• One row per employee. Employee ID must match the HRM (it's pre-filled for all active employees)."],["• Amounts in rupiah without “Rp” or dots, e.g. 10500000 (decimals with a point: 2101595.15). Leave empty or 0 for none."],["• Payslip No is optional — leave it empty to number automatically (e.g. 106/" + c.prefix + "/VII/2026)."],["• Division is optional — leave it empty to use the division on the employee's profile."],["• Choose the month and pay date in the HRM when uploading. Uploading the same month again replaces those payslips (marked revised)."],["• Each payslip PDF is protected with the employee's date of birth (DDMMYYYY). Employees without a date of birth on their profile are skipped."],
+      ["• Columns marked (info) are the attendance recap for " + periodLabel(ym) + " from the HRM (same numbers as the Attendance report). They're for reference and are ignored when you upload."],
+      ["• Overtime hours = time after the scheduled end (" + sched().end + ") on workdays plus all hours worked on days off, counting only days with at least " + (c.otMin === "" || c.otMin == null ? 30 : Number(c.otMin)) + " minutes."],
+      [Number(c.otRate) ? "• The “" + (c.income[oti] || "Overtime") + "” column is pre-filled with overtime hours × Rp " + Number(c.otRate).toLocaleString("id-ID") + " per hour. Change it if needed." : "• Set an overtime rate in Payroll → Payslip layout to pre-fill the Overtime column automatically."],
+      ["• Uploading for a month: the month in cell B1 is used (you can still change it before publishing)."]]);
     help["!cols"] = [{wch:120}]; X.utils.book_append_sheet(wb, help, "How to use");
-    await download(`ONEderland_Salary_Template.xlsx`, X.write(wb, {type:"array", bookType:"xlsx"})); }
+    await download(`ONEderland_Salary_${ym}.xlsx`, X.write(wb, {type:"array", bookType:"xlsx"}));
+    toast(withAtt ? `Salary sheet for ${periodLabel(ym)} with attendance for ${withAtt} of ${list.length} people.` : `Salary sheet for ${periodLabel(ym)} — no attendance uploaded for that month yet.`); }
   catch(e){ toast("The template couldn't be created."); }
 }
 // amounts: numbers as-is; text in Indonesian (8.000.000 / 2.101.595,15) or English (8,000,000 / 2101595.15) style
@@ -1991,7 +2024,9 @@ async function readPayFile(file){
   try { const X = await loadXLSX(), wb = X.read(await file.arrayBuffer(), {type:"array"});
     const name = wb.SheetNames.find(n => /salar|gaji|payroll/i.test(n)) || wb.SheetNames[0];
     const rows = X.utils.sheet_to_json(wb.Sheets[name], {header:1, raw:true, defval:""});
-    S.ui.payParse = {file:file.name, rows, period:S.ui.payParse?.period || today().slice(0,7), payDate:""}; render(); }
+    const m0 = rows.slice(0, 3).find(r => /salary month/i.test(String(r[0] || "")));
+    const per = m0 && /^\d{4}-(0[1-9]|1[0-2])$/.test(String(m0[1]).trim()) ? String(m0[1]).trim() : payMonth();
+    S.ui.payParse = {file:file.name, rows, period:per, payDate:""}; render(); }
   catch(e){ S.ui.payParse = {error:"This file couldn't be read. Upload the salary template (.xlsx)."}; render(); }
 }
 function buildPay(P){
@@ -2014,9 +2049,11 @@ function buildPay(P){
     if(bad.length){ problems.push(`${e.name}: “${bad.map(b => b[0]).join(", ")}” isn't a valid amount.`); continue; }
     const gross = inc.reduce((s, [, v]) => s + v, 0), dd = ded.reduce((s, [, v]) => s + v, 0);
     if(!gross){ warn.push(`${e.name}: no income — skipped.`); continue; }
+    const R0 = payRecap(e, P.period), oti = c.income.findIndex(k => /overtime|lembur/i.test(k));
+    if(R0.ot && oti >= 0 && !inc[oti][1]) warn.push(`${e.name}: ${R0.ot} overtime hour(s) in attendance but “${c.income[oti]}” is empty.`);
     const prev = existing.find(x => x.empId === e.id);
     const no = (cno >= 0 && String(r[cno]).trim()) || prev?.no || `${++seq}/${c.prefix}/${ROMAN[m-1]}/${y}`;
-    items.push({empId:e.id, period:P.period, payDate:P.payDate || `${P.period}-28`, no, division:cdiv >= 0 ? String(r[cdiv]).trim() : "", income:inc, deduction:ded, gross, deductions:dd, takeHome:gross - dd, revised:!!prev});
+    items.push({empId:e.id, period:P.period, payDate:P.payDate || `${P.period}-28`, no, division:cdiv >= 0 ? String(r[cdiv]).trim() : "", income:inc, deduction:ded, gross, deductions:dd, takeHome:gross - dd, revised:!!prev, att:R0.has ? R0.row : null});
   }
   for(const k of c.income.concat(c.deduction)) if(col(k) < 0) warn.push(`Column “${k}” not found — treated as 0.`);
   return {items, problems, warn};
@@ -2036,8 +2073,9 @@ function payUploadPanel(){
       ${R.problems.length ? `<ul class="errs">${R.problems.slice(0,10).map(p => `<li>${esc(p)}</li>`).join("")}</ul>` : ""}
       ${R.warn.length ? `<div class="note warn">${ic("alert")}<div>${R.warn.slice(0,8).map(esc).join("<br>")}</div></div>` : ""}
       ${Object.keys(miss).length ? `<div class="note warn">${ic("alert")}<div><b>Missing on the profile:</b> ${Object.entries(miss).map(([id, f]) => `${esc(nm(id))} (${f.map(x => x === "birthDate" ? "date of birth — needed for the password" : x).join(", ")})`).join("; ")}. People without a date of birth are skipped; ask HRD to complete the profile.</div></div>` : ""}
-      <div class="tw" style="border:1px solid var(--line);border-radius:10px"><table class="t rt"><thead><tr><th>Employee</th><th>Payslip no.</th><th class="r">Income</th><th class="r">Deductions</th><th class="r">Take home</th></tr></thead><tbody>
-        ${R.items.slice(0, 50).map(x => `<tr><td data-l="Employee">${esc(nm(x.empId))}${x.revised ? ` <span class="tag">revised</span>` : ""}</td><td data-l="No" class="small">${esc(x.no)}</td><td data-l="Income" class="r num">${rp(x.gross)}</td><td data-l="Deductions" class="r num">${rp(x.deductions)}</td><td data-l="Take home" class="r num"><b>${rp(x.takeHome)}</b></td></tr>`).join("")}</tbody></table></div>
+      <div class="tw" style="border:1px solid var(--line);border-radius:10px"><table class="t rt pay-t"><thead><tr><th>Employee</th><th>Payslip no.</th><th class="r" title="Present / work days · late · absent">Attendance</th><th class="r">Overtime</th><th class="r">Income</th><th class="r">Deductions</th><th class="r">Take home</th></tr></thead><tbody>
+        ${R.items.slice(0, 50).map(x => `<tr><td data-l="Employee">${esc(nm(x.empId))}${x.revised ? ` <span class="tag">revised</span>` : ""}</td><td data-l="No" class="small">${esc(x.no)}</td>
+          <td data-l="Attendance" class="r small">${x.att ? `${x.att[2] + x.att[6]}/${x.att[1]} days${x.att[3] ? ` · ${x.att[3]} late` : ""}${x.att[4] ? ` · <b style="color:var(--bad)">${x.att[4]} absent</b>` : ""}` : `<span class="muted">no data</span>`}</td><td data-l="Overtime" class="r num small">${x.att && x.att[8] ? x.att[8] + " h" : "—"}</td><td data-l="Income" class="r num">${rp(x.gross)}</td><td data-l="Deductions" class="r num">${rp(x.deductions)}</td><td data-l="Take home" class="r num"><b>${rp(x.takeHome)}</b></td></tr>`).join("")}</tbody></table></div>
       ${S.ui.payProgress ? `<div><b>Publishing… ${S.ui.payProgress.done}/${S.ui.payProgress.total}</b>${meter(S.ui.payProgress.done, Math.max(1, S.ui.payProgress.total), 2)}</div>` :
       `<div class="row end"><button class="btn" type="button" data-act="pay-preview" ${R.items.length ? "" : "disabled"}>${ic("doc")}Preview first payslip</button><button class="btn pri" type="button" data-act="pay-publish" ${R.items.length && !R.problems.length ? "" : "disabled"}>${ic("check")}Publish ${R.items.length} payslip(s)</button></div>`}
     </div></section>`;
@@ -2169,7 +2207,8 @@ const TPL = [
   ["supervisorNo","Supervisor Employee ID",0,"Employee ID of the direct supervisor"],["hrAdmin","HRD Admin",0,"Yes or No"],["joinDate","Join Date",1,"DD/MM/YYYY"],
   ["status","Status",0,"Probation, Active or Resigned"],["ctype","Contract Type",0,"Probation, PKWT or PKWTT"],["cno","Contract No.",0,""],
   ["cstart","Contract Start",0,"DD/MM/YYYY (default: join date)"],["cend","Contract End",0,"DD/MM/YYYY (empty for PKWTT)"],
-  ["q:annual","Annual Leave Balance",0,"Days available now (optional)"],["q:sick","Sick Leave Balance",0,"Days available now (optional)"]
+  ["q:annual","Annual Leave Balance",0,"Days available now (optional)"],["q:sick","Sick Leave Balance",0,"Days available now (optional)"],
+  ["attName","Attendance Machine Name",0,"Name exactly as it appears on the fingerprint machine, e.g. Siti. If it differs per machine, separate with commas."]
 ];
 const hkey = s => String(s ?? "").toLowerCase().replace(/\*/g,"").replace(/[^a-z0-9]/g,"");
 const canon = (list, v) => list.find(x => x.toLowerCase() === String(v).trim().toLowerCase());
@@ -2177,15 +2216,15 @@ const dmyStr = s => s ? `${s.slice(8,10)}/${s.slice(5,7)}/${s.slice(0,4)}` : "";
 function tplRow(e){
   return [e.empNo, e.name, e.email||"", e.phone||"", e.gender||"", dmyStr(e.birthDate), e.position, e.dept, e.division||"", e.office||"", jobOf(e),
     e.supervisorId ? emp(e.supervisorId)?.empNo || "" : "", e.role === "hrd" ? "Yes" : "No", dmyStr(e.joinDate), e.status, e.contract?.type || "", e.contract?.no || "",
-    dmyStr(e.contract?.start), dmyStr(e.contract?.end), LT().annual?.track ? balance(e.id,"annual").avail : "", LT().sick?.track ? balance(e.id,"sick").avail : ""];
+    dmyStr(e.contract?.start), dmyStr(e.contract?.end), LT().annual?.track ? balance(e.id,"annual").avail : "", LT().sick?.track ? balance(e.id,"sick").avail : "", e.attName || ""];
 }
 async function downloadEmpTemplate(withData){
   let X; try { X = await loadXLSX(); } catch(e){ toast("The spreadsheet tool couldn't load. Check your connection."); return; }
   const head = TPL.map(c => c[1] + (c[2] ? " *" : ""));
   const sup = activeE().find(e => ["gm","supervisor"].includes(e.role));
   const rows = withData ? E().map(tplRow) : [
-    ["ONE-0101","Example Person One","person.one@company.com","+62 812-0000-0001","F","14/02/1997","Front Office Staff",(cfg().departments||[])[0]||"",(cfg().divisions||[])[0]||"",(cfg().offices||[])[0]||"","Staff",sup?.empNo||"","No","03/11/2026","Probation","Probation","PRB/ONE/2026/101","03/11/2026","01/02/2027","",""],
-    ["ONE-0102","Example Person Two","person.two@company.com","+62 812-0000-0002","M","09/09/1990","Finance Supervisor",(cfg().departments||[])[1]||"",(cfg().divisions||[])[1]||"",(cfg().offices||[])[1]||"","Supervisor",sup?.empNo||"","No","01/06/2024","Active","PKWT","PKWT/ONE/2026/102","01/06/2026","31/05/2027","10","12"]];
+    ["ONE-0101","Example Person One","person.one@company.com","+62 812-0000-0001","F","14/02/1997","Front Office Staff",(cfg().departments||[])[0]||"",(cfg().divisions||[])[0]||"",(cfg().offices||[])[0]||"","Staff",sup?.empNo||"","No","03/11/2026","Probation","Probation","PRB/ONE/2026/101","03/11/2026","01/02/2027","","","Person One"],
+    ["ONE-0102","Example Person Two","person.two@company.com","+62 812-0000-0002","M","09/09/1990","Finance Supervisor",(cfg().departments||[])[1]||"",(cfg().divisions||[])[1]||"",(cfg().offices||[])[1]||"","Supervisor",sup?.empNo||"","No","01/06/2024","Active","PKWT","PKWT/ONE/2026/102","01/06/2026","31/05/2027","10","12","P. Two"]];
   const ws = X.utils.aoa_to_sheet([head].concat(rows));
   ws["!cols"] = TPL.map(c => ({wch: Math.max(14, c[1].length + 4)}));
   ws["!freeze"] = {xSplit:2, ySplit:1};
@@ -2224,7 +2263,7 @@ function validateImport(){
   const fileNos = new Set(I.rows.map(x => String(g(x.r,"empNo")).trim().toUpperCase()).filter(Boolean));
   for(const {line, r} of I.rows){
     const o = {line, errors:[], warnings:[]}, str = k => String(g(r,k) ?? "").trim();
-    o.empNo = str("empNo"); o.name = str("name"); o.email = str("email"); o.phone = str("phone"); o.position = str("position"); o.cno = str("cno"); o.supervisorNo = str("supervisorNo");
+    o.empNo = str("empNo"); o.name = str("name"); o.email = str("email"); o.phone = str("phone"); o.attName = str("attName"); o.position = str("position"); o.cno = str("cno"); o.supervisorNo = str("supervisorNo");
     const key = o.empNo.toUpperCase();
     o.existing = key ? E().find(e => (e.empNo||"").toUpperCase() === key) : null;
     for(const [k,l,req] of TPL) if(req && !str(k) && (!o.existing || k === "empNo")) o.errors.push(`${l} is empty`);
@@ -2288,7 +2327,7 @@ async function runImport(){
   for(const r of rows){
     const supId = r.supervisorNo ? ids.get(r.supervisorNo.toUpperCase()) || null : undefined;
     if(r.action === "new"){
-      const e = {id:ids.get(r.empNo.toUpperCase()), empNo:r.empNo, name:r.name, email:r.email, phone:r.phone, gender:r.gender, birthDate:r.birthDate||"", position:r.position, dept:r.dept, division:r.division, office:r.office,
+      const e = {id:ids.get(r.empNo.toUpperCase()), empNo:r.empNo, name:r.name, email:r.email, phone:r.phone, attName:r.attName || "", gender:r.gender, birthDate:r.birthDate||"", position:r.position, dept:r.dept, division:r.division, office:r.office,
         jobLevel:r.jobLevel, supervisorId:supId || null, joinDate:r.joinDate, status:r.status, exitDate:"", exitReason:"", notes:[], contracts:[], quotaLog:[]};
       e.role = roleFor(e.jobLevel, !!r.hrAdmin);
       const ct = {type:r.ctype, no:r.cno, start:r.cstart, end:r.ctype === "PKWTT" ? null : (r.cend || null)}; e.contract = ct; e.contracts = [ct];
@@ -2298,7 +2337,7 @@ async function runImport(){
       docs.push(e);
     } else {
       const e = clone(r.existing);
-      for(const k of ["name","email","phone","gender","birthDate","position","dept","division","office","jobLevel","joinDate","status"]) if(r[k]) e[k] = r[k];
+      for(const k of ["name","email","phone","attName","gender","birthDate","position","dept","division","office","jobLevel","joinDate","status"]) if(r[k]) e[k] = r[k];
       if(supId !== undefined) e.supervisorId = supId;
       e.role = roleFor(e.jobLevel, r.hrAdmin == null ? e.role === "hrd" : r.hrAdmin);
       if(r.ctype && r.cstart && (r.ctype !== e.contract?.type || r.cstart !== e.contract?.start)){
@@ -2435,7 +2474,7 @@ function mEmp(){
   const f = (n, l, type="text", cls="") => `<label class="f ${cls}"><span>${l}</span><input type="${type}" name="${n}" value="${esc(dv(k,n,base[n]||""))}"></label>`;
   const ctype = dv(k,"ctype","Probation"), cstart = dv(k,"cstart", dv(k,"joinDate",base.joinDate));
   return `<form data-draft="${k}" data-submit="emp" novalidate><div class="md-h"><span class="tile c1">${ic("user")}</span><h2>${fromCand ? `Hire ${esc(fromCand.name)}` : isNew ? "Add employee" : `Edit ${esc(e0.name)}`}</h2><button class="ib plain" type="button" data-act="close" aria-label="Close">${ic("x")}</button></div>
-  <div class="md-b"><div class="fields">${f("name","Full name","text","full")}${f("empNo","Employee ID")}${f("email","Work email","email")}${f("phone","Phone","tel")}${f("attId","Fingerprint machine ID")}
+  <div class="md-b"><div class="fields">${f("name","Full name","text","full")}${f("empNo","Employee ID")}${f("email","Work email","email")}${f("phone","Phone","tel")}${f("attName","Name on attendance machine")}
     <label class="f"><span>Gender</span><select name="gender"><option value="">—</option><option value="F" ${dv(k,"gender",base.gender)==="F"?"selected":""}>Female</option><option value="M" ${dv(k,"gender",base.gender)==="M"?"selected":""}>Male</option></select></label>
     ${f("position","Position")}${orgSelect(k,"dept","Department","departments",base.dept)}${orgSelect(k,"division","Division","divisions",base.division)}${orgSelect(k,"office","Office","offices",base.office)}
     <label class="f"><span>Direct supervisor</span><select name="supervisorId"><option value="">None</option>${E().filter(x => x.id !== e0?.id).map(x => `<option value="${x.id}" ${dv(k,"supervisorId",base.supervisorId||"")===x.id?"selected":""}>${esc(x.name)} — ${esc(x.position)}</option>`).join("")}</select></label>
@@ -2470,7 +2509,7 @@ async function saveEmp(){
   const k = "emp-" + (S.modal.id || S.modal.cand || "new");
   const base = e0 || {name:fromCand?.name||"", email:fromCand?.email||"", phone:fromCand?.phone||"", position:fromCand?.position||"", dept:fromCand?.dept||"", gender:"", role:"employee", jobLevel:"Staff", supervisorId:"", joinDate:addDays(today(),7), status:"Probation", empNo:nextEmpNo()};
   const e = e0 ? clone(e0) : {id:uid("e"), contracts:[], notes:[]};
-  for(const n of ["name","empNo","email","phone","gender","position","dept","supervisorId","role","joinDate","birthDate","status","exitDate","exitReason","office","division","jobLevel","attId","address"]) e[n] = (dv(k,n,base[n]||"")||"").toString().trim();
+  for(const n of ["name","empNo","email","phone","gender","position","dept","supervisorId","role","joinDate","birthDate","status","exitDate","exitReason","office","division","jobLevel","attName","address"]) e[n] = (dv(k,n,base[n]||"")||"").toString().trim();
   if(isHR()) e.payroll = !!dv(k,"payroll",!!base.payroll);
   e.role = roleFor(e.jobLevel, isAdmin() ? !!dv(k,"hrAdmin",base.role==="hrd") : base.role === "hrd");
   if(!e.jobLevel){ S.ui.empErr = "Choose a job level."; render(); return; }
@@ -2478,7 +2517,9 @@ async function saveEmp(){
   e.supervisorId = e.supervisorId || null;
   if(!e.name || !e.position || !e.dept || !e.joinDate || !e.office || !e.division){ S.ui.empErr = "Name, position, department, division, office and join date are required."; render(); return; }
   if(E().some(x => x.empNo === e.empNo && x.id !== e.id)){ S.ui.empErr = `Employee ID ${e.empNo} is already used.`; render(); return; }
-  if(e.attId){ const dup = E().find(x => x.id !== e.id && x.office === e.office && String(x.attId || "") === e.attId); if(dup){ S.ui.empErr = `Fingerprint machine ID ${e.attId} in ${e.office} already belongs to ${dup.name}.`; render(); return; } }
+  e.attName = attNames(e.attName).length ? String(e.attName).split(",").map(x => x.trim()).filter(Boolean).join(", ") : "";
+  { const mine = attNames(e.attName); const dup = mine.length && E().find(x => x.id !== e.id && x.status !== "Resigned" && x.office === e.office && attNames(x.attName).some(n => mine.includes(n)));
+    if(dup){ S.ui.empErr = `The attendance name “${e.attName}” is already used by ${dup.name} in ${e.office || "the same office"}. Use a name that's unique on that machine (e.g. “Siti R”).`; render(); return; } }
   let p = e.supervisorId, hop = 0; while(p && hop++ < 50){ if(p === e.id){ S.ui.empErr = "That supervisor would create a reporting loop."; render(); return; } p = emp(p)?.supervisorId; }
   if(!e0){
     const ctype = dv(k,"ctype","Probation"), cstart = dv(k,"cstart", e.joinDate), cend = ctype === "PKWTT" ? null : dv(k,"cend", addDays(cstart, ctype==="Probation"?90:365));
@@ -3285,6 +3326,7 @@ document.addEventListener("click", async ev => {
     case "att-template": S.ui.attUp = true; S.ui.attParse = null; render(); return;
     case "att-fmt": S.ui.attFmt = v; S.ui.attParse = null; render(); return;
     case "att-tpl": await attTemplate(v); return;
+    case "att-suggest": if(S.ui.attParse){ S.ui.attParse.assign[id] = v; render(); } return;
     case "paytab": S.ui.paytab = v; if(v === "settings") S.ui.payImgLoaded = false; render(); return;
     case "pay-tpl": if(isPayroll()) await payTemplate(); return;
     case "pay-upload": if(!isPayroll()) return; S.ui.payUp = true; S.ui.payParse = null; S.ui.payMissing = null; render(); return;
@@ -3347,6 +3389,7 @@ document.addEventListener("change", async ev => {
   if(t.id === "pay-month" && S.ui.payParse){ if(/^\d{4}-\d{2}$/.test(t.value)){ S.ui.payParse.period = t.value; S.ui.payParse.payDate = ""; } render(); return; }
   if(t.id === "pay-date" && S.ui.payParse){ S.ui.payParse.payDate = t.value; render(); return; }
   if(t.id === "pay-period"){ S.ui.payPeriod = t.value; render(); return; }
+  if(t.id === "pay-tpl-month"){ if(/^\d{4}-\d{2}$/.test(t.value)) S.ui.payMonth = t.value; render(); return; }
   if(t.dataset.payset){ if(isPayroll()) await savePaySet(t.dataset.payset, t.value); return; }
   if(t.dataset.payimg){ const f = t.files?.[0]; if(!f || !isPayroll()) return; if(f.size > 2e6){ toast("Use an image under 2 MB."); return; }
     try { const path = await window.HRM.uploadPayAsset(t.dataset.payimg, f); await savePaySetRaw(t.dataset.payimg, path); S.ui.payImgLoaded = false; toast("Uploaded."); render(); } catch(e){ toast("Upload failed: " + (e?.message || "try again")); } return; }

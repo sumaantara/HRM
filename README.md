@@ -41,6 +41,12 @@ app changes their access within a minute. A profile set to **Resigned** loses ac
 3. The person clicks **Set my password**, chooses a password and lands in the app — the account is already
    connected to their profile (verified email). Later sign-ins: work email + password, or *Forgot password?*.
 
+### How employees, attendance and payroll connect
+
+- **Employee ID** (e.g. `ONE-0024`) is the key everywhere a person types or uploads data: employee import, daily/WFH attendance sheets and the salary sheet.
+- **Fingerprint machines (F1/F2)** don't know the Employee ID, and machine user numbers restart at 1 on every machine, so they are **never** used. Each profile has a **Name on attendance machine** (e.g. Siti Rahmawati → `Siti`; several names separated by commas). Uploads match that name, case- and space-insensitive, only within the office chosen for the file. Exact full name is the only automatic fallback; a first-name match is just a suggestion HR confirms. The name must be unique per office (the profile form refuses duplicates). A name picked during import is saved on the profile.
+- **Payroll ← attendance:** the salary template is made for a month and carries each person's recap for that month (work days, present, late, absent, leave, WFH, work hours, overtime hours — same numbers as the Attendance report, marked "(info)", ignored on upload). With an overtime rate set in Payroll → Payslip layout, the Overtime column is pre-filled (hours × rate). Overtime = time after the scheduled end on workdays + all hours on days off, counting days with at least the minimum (default 30 min). The upload preview shows attendance next to each payslip and warns when attendance has overtime but the sheet doesn't.
+
 ### Payroll & payslips
 
 - **Who runs payroll:** employees with the *Payroll access* flag (set by HRD/Admin on the employee form or in System → Access), plus HRD and Admin. They see **Finance → Payroll**.
