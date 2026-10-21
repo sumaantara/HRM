@@ -290,7 +290,7 @@ const dv = (k, n, d) => (S.drafts[k] && n in S.drafts[k]) ? S.drafts[k][n] : d;
    rd/<uid>, ph/<uid>   per-person read receipts and self-uploaded profile photo
    audit/<uid>/m/<yyyy-mm>  each person's own monthly audit trail
    requests, notifs, counters   shared working data (Contributors write) */
-const APP_VERSION = "3.7.0", SCHEMA = 2;
+const APP_VERSION = "3.8.0", SCHEMA = 2;
 const PRIVATE_FIELDS = ["phone","gender","birthDate","address","exitReason","contract","contracts","notes","quotaLog"];
 const SUB_COLS = ["employees","private","requests","candidates","tasks","reviews","reminders","notifs","announcements","attendance","attImports","backups","dec","links","rd","ph","sub","payslips","payruns"];
 const CORE_COLS = ["employees","requests","tasks","notifs","announcements","attendance"];
@@ -1256,14 +1256,47 @@ function vProfile(){
       <div class="row" style="gap:8px;margin-top:10px"><span class="tag">${esc(e.empNo)}</span><span class="pill ${e.status==="Probation"?"p-info":e.status==="Resigned"?"p-cancelled":"p-active"}">${esc(e.status)}</span><span class="tag">${esc(jobOf(e))}</span>${e.role==="hrd"?`<span class="tag">HRD admin</span>`:""}${priv?`<span class="pill p-${cs.k}">${esc(e.contract?.type||"")} · ${esc(cs.t)}</span>`:""}</div></div>
     <div class="row">${isHR() && !e.system ? `<span class="pill ${inviteState(e)[1]}" title="HRM account">${esc(inviteState(e)[0])}</span>${canInvite(e) ? `<button class="btn" type="button" data-act="invite" data-id="${e.id}">${ic("mail")}${e.invitedAt ? "Resend invitation" : "Send invitation"}</button>` : ""}` : ""}
       ${isHR() ? `<button class="btn" type="button" data-act="emp-edit" data-id="${e.id}">${ic("edit")}Edit</button>` : ""}
+      ${realAdmin() && window.HRM?.mfa && e.userId && e.id !== S.realEmpId ? `<button class="btn" type="button" data-act="mfa-reset" data-id="${e.id}" title="For a lost or replaced phone: ${esc(first(e.id))} sets up the authenticator again at the next sign-in">${ic("shield")}${S.ui.mfaReset === e.id ? "Tap again to reset" : "Reset 2-step"}</button>` : ""}
       ${isHR() && !self ? `<button class="btn pri" type="button" data-act="task-new" data-emp="${e.id}">${ic("star")}Request review</button>` : ""}</div></div>
     <div class="tabs" role="tablist" style="padding:0 14px">${tabs.map(([k,l]) => `<button type="button" role="tab" data-act="ptab" data-v="${k}" aria-selected="${(S.ui.ptab||"overview")===k}">${l}</button>`).join("")}</div></section>
   ${!priv ? `<div class="note">${ic("info")}<div>Contract, notes, leave and performance details are only visible to ${esc(first(id))}, their supervisor, HRD and the General Manager.</div></div>` : ""}
   ${body}`;
 }
+/* two-step verification (MFA) — required for Admin, HRD, GM/Director and Finance (enforced in the database), optional for others */
+const mfaNeeded = e => !!(e && (e.admin || e.payroll || e.role === "hrd" || e.role === "gm"));
+function mfaCell(e){
+  if(e.system || !e.userId) return `<span class="muted small">no account</span>`;
+  if(!window.HRM?.mfa) return mfaNeeded(e) ? `<span class="pill p-pending">Required</span>` : `<span class="muted small">Optional</span>`;
+  if(S.ui.mfaUsers == null && !S.ui.mfaLoading){ S.ui.mfaLoading = true; window.HRM.mfa.users().then(u => { S.ui.mfaUsers = u; }).catch(() => { S.ui.mfaUsers = []; }).finally(() => { S.ui.mfaLoading = false; render(); }); }
+  const on = (S.ui.mfaUsers || []).includes(e.userId);
+  return on ? `<span class="pill p-approved">On</span>` : mfaNeeded(e) ? `<span class="pill p-pending" title="Will be asked to set it up at the next sign-in">Required · not set up</span>` : `<span class="muted small">Off (optional)</span>`;
+}
+function securityCard(e){
+  if(!window.HRM?.mfa || e.id !== S.realEmpId) return "";
+  const m = window.HRM.mfa.status(), mand = m.mandatory || mfaNeeded(e);
+  return `<section class="card"><div class="card-h"><span class="tile ${m.enrolled ? "c3" : "c4"}">${ic("shield")}</span><h2>Sign-in security</h2>${m.enrolled ? `<span class="pill p-approved">2-step on</span>` : mand ? `<span class="pill p-pending">Required</span>` : `<span class="pill p-neutral">2-step off</span>`}</div>
+    <div class="card-b stack"><p class="muted" style="margin:0">${m.enrolled ? "Two-step verification is on: after your password you enter a 6-digit code from your authenticator app." : "Add a second step to your sign-in: after your password you enter a 6-digit code from an authenticator app on your phone, so a stolen password alone can't open your account."}
+      ${mand ? " It's required for your access (Admin, HRD, GM/Director or Finance)." : ""}</p>
+      <div class="row">${!m.enrolled ? `<button class="btn pri" type="button" data-act="mfa-on">${ic("shield")}Turn on two-step verification</button>` : !mand ? `<button class="btn" type="button" data-act="mfa-off">${S.ui.mfaOff ? "Tap again to turn off" : "Turn off"}</button>` : ""}</div>
+      <p class="small muted" style="margin:0">${ic("clock","inline")} For security you're signed out automatically after 30 minutes without activity.</p></div></section>`;
+}
+function mMfa(){
+  const x = S.ui.mfaEnroll;
+  return `<form data-submit="mfa" novalidate><div class="md-h"><span class="tile c3">${ic("shield")}</span><h2>Turn on two-step verification</h2><button class="ib plain" type="button" data-act="close" aria-label="Close">${ic("x")}</button></div>
+    <div class="md-b stack"><ol class="auth-steps"><li>Install <b>Google Authenticator</b>, <b>Microsoft Authenticator</b> or <b>Authy</b> on your phone.</li><li>Add an account in the app and scan this code.</li><li>Enter the 6-digit code the app shows.</li></ol>
+      <div class="mfa-qr">${x?.qr ? `<img src="${esc(x.qr)}" alt="QR code for the authenticator app" width="180" height="180"><small class="muted">Can't scan? Enter this key:<br><code>${esc(x.secret.replace(/(.{4})/g, "$1 ").trim())}</code></small>` : x?.error ? `<ul class="errs"><li>${esc(x.error)}</li></ul>` : `<span class="muted">Preparing…</span>`}</div>
+      <label class="f"><span>6-digit code</span><input name="code" id="mfa-code" inputmode="numeric" autocomplete="one-time-code" maxlength="7" placeholder="123 456" style="font-size:1.3rem;letter-spacing:.3em;text-align:center"></label>
+      ${S.ui.mfaErr ? `<ul class="errs"><li>${esc(S.ui.mfaErr)}</li></ul>` : ""}</div>
+    <div class="md-f"><button class="btn" type="button" data-act="close">Cancel</button><button class="btn pri" type="submit" ${x?.qr ? "" : "disabled"}>Turn on</button></div></form>`;
+}
+async function mfaConfirm(){
+  const code = document.getElementById("mfa-code")?.value || "";
+  try { await window.HRM.mfa.confirm(S.ui.mfaEnroll.id, code); S.modal = null; S.ui.mfaEnroll = null; S.ui.mfaErr = ""; renderModal(); audit("mfa_enabled", nm(S.realEmpId), ""); toast("Two-step verification is on. You'll enter a code from the app each time you sign in."); render(); }
+  catch(e){ S.ui.mfaErr = e?.message || "That code didn't work."; renderModal(); document.getElementById("mfa-code")?.focus(); }
+}
 function pOverview(e){
   const priv = canSeePrivate(e.id);
-  return `<div class="grid two"><section class="card"><div class="card-h"><h2>Employment</h2></div><div class="card-b kv">
+  return `${securityCard(e)}<div class="grid two"><section class="card"><div class="card-h"><h2>Employment</h2></div><div class="card-b kv">
     <div><span>Employee ID</span>${esc(e.empNo)}</div><div><span>Position</span>${esc(e.position)}</div><div><span>Department</span>${esc(e.dept)}</div>
     <div><span>Direct supervisor</span>${e.supervisorId?`<button class="btn link" type="button" data-act="open-emp" data-id="${e.supervisorId}">${esc(nm(e.supervisorId))}</button>`:"—"}</div>
     <div><span>Join date</span>${fmt(e.joinDate)}</div><div><span>Length of service</span>${tenure(e.joinDate)}</div>
@@ -2669,11 +2702,13 @@ function vSettings(){
         ${matrix.map(r => `<tr><td style="white-space:normal">${r[0]}</td>${r.slice(1).map(x => `<td>${x}</td>`).join("")}</tr>`).join("")}</tbody></table></div>
       <p class="small muted">Supervisor, Manager and General Manager come from each person's job level (Organization → Job levels). HRD, Payroll (Finance) and Admin access are given per person below. Payroll can upload salaries and publish payslips; HRD and Admin can too.</p></div>
     <div class="card-h" style="border-top:1px solid var(--line)"><h2>System access</h2></div>
-    <div class="tw"><table class="t rt"><thead><tr><th>Person</th><th>Job level</th><th>HRD access</th><th>Payroll</th><th>Admin</th></tr></thead><tbody>
+    <div class="tw"><table class="t rt"><thead><tr><th>Person</th><th>Job level</th><th>HRD access</th><th>Payroll</th><th>Admin</th><th>2-step sign-in</th></tr></thead><tbody>
       ${accts.map(e => `<tr><td class="wide">${who(e.id, e.system ? "System account" : e.position)}</td><td data-l="Job level">${esc(e.system ? "—" : jobOf(e))}</td>
         <td data-l="HRD access"><input type="checkbox" data-access="hrd" data-id="${e.id}" ${e.role==="hrd"?"checked":""} ${e.system?"disabled":""} aria-label="HRD access for ${esc(e.name)}"></td>
         <td data-l="Payroll"><input type="checkbox" data-access="payroll" data-id="${e.id}" ${e.payroll?"checked":""} ${e.system?"disabled":""} aria-label="Payroll access for ${esc(e.name)}"></td>
-        <td data-l="Admin"><input type="checkbox" data-access="admin" data-id="${e.id}" ${e.admin?"checked":""} aria-label="Admin access for ${esc(e.name)}"></td></tr>`).join("")}</tbody></table></div>
+        <td data-l="Admin"><input type="checkbox" data-access="admin" data-id="${e.id}" ${e.admin?"checked":""} aria-label="Admin access for ${esc(e.name)}"></td>
+        <td data-l="2-step">${mfaCell(e)}</td></tr>`).join("")}</tbody></table></div>
+    <p class="small muted" style="padding:0 18px">Two-step verification is <b>required</b> for Admin, HRD, GM/Director and Payroll (Finance): until they verify with their authenticator app the database gives them no data. It's optional for everyone else. Everyone is signed out after 30 minutes without activity.</p>
     <div class="card-h" style="border-top:1px solid var(--line)"><h2>Data</h2></div>
     <div class="card-b stack"><p class="muted">Remove the fictional sample company before going live. This deletes ${ex} sample record(s) — employees, requests, candidates, reviews, attendance, announcements and notifications marked as samples — plus anything that belongs to the removed sample employees. Settings, offices, divisions and job levels are kept. This can't be undone.</p>
       <div>${ex ? sampleBtn() : `<span class="pill p-approved">No sample data left</span>`}</div></div>`;
@@ -2729,7 +2764,7 @@ async function setCfg(path, value){
 function renderModal(){
   const el = document.getElementById("modal");
   if(!S.modal){ el.innerHTML = ""; return; }
-  const inner = {req:() => mReq(S.modal.id), task:mTask, review:mReview, cand:mCand, emp:mEmp, contract:mContract, rem:mRem, quota:mQuota, ann:mAnn}[S.modal.kind]?.() || "";
+  const inner = {req:() => mReq(S.modal.id), task:mTask, review:mReview, cand:mCand, emp:mEmp, contract:mContract, rem:mRem, quota:mQuota, ann:mAnn, mfa:mMfa}[S.modal.kind]?.() || "";
   el.innerHTML = `<div class="mb" data-act="backdrop"><div class="md ${S.modal.kind==="review"||S.modal.kind==="emp"?"wide":""}" role="dialog" aria-modal="true">${inner}</div></div>`;
 }
 async function wipeSample(){
@@ -3042,12 +3077,13 @@ function sysAccounts(){
     <div class="tw" style="border:1px solid var(--line);border-radius:10px"><table class="t"><thead><tr><th>Permission</th><th>Staff</th><th>Supervisor / Manager</th><th>General Manager</th><th>HRD</th><th>Admin</th></tr></thead><tbody>
       ${matrix.map(r => `<tr><td style="white-space:normal">${r[0]}</td>${r.slice(1).map(x => `<td>${x}</td>`).join("")}</tr>`).join("")}</tbody></table></div></div>
   <div class="card-h" style="border-top:1px solid var(--line)"><h2>People & access</h2>${activeE().some(x => canInvite(x) && !x.invitedAt) ? `<button class="btn sm pri" type="button" data-act="invite-all" style="margin-left:auto">${ic("mail")}Invite everyone not yet invited (${activeE().filter(x => canInvite(x) && !x.invitedAt).length})</button>` : ""}</div>
-  <div class="tw"><table class="t rt"><thead><tr><th>Person</th><th>Signed-in account</th><th>Access level</th><th>HRD</th><th>Admin</th><th></th></tr></thead><tbody>
+  <div class="tw"><table class="t rt"><thead><tr><th>Person</th><th>Signed-in account</th><th>Access level</th><th>HRD</th><th>Admin</th><th>2-step sign-in</th><th></th></tr></thead><tbody>
     ${accts.map(e => { const p = e.userId ? prof(e.userId) : null, need = e.admin || e.role === "hrd" || e.role === "gm" ? "HR editor" : "Employee";
       return `<tr><td class="wide">${who(e.id, e.system ? "System account" : e.position)}</td><td data-l="Account">${e.userId ? `<span class="pill p-active">Linked</span> <span class="small muted">${esc(p?.name || "")}</span>` : `<span class="pill ${inviteState(e)[1]}">${esc(inviteState(e)[0])}</span>${canInvite(e) ? ` <button class="btn link small" type="button" data-act="invite" data-id="${e.id}">${e.invitedAt ? "Resend" : "Invite"}</button>` : !e.system && (!e.email || /@example\.com$/i.test(e.email)) ? ` <span class="small muted">no work email</span>` : ""}`}</td>
         <td data-l="Access">${need}</td>
         <td data-l="HRD"><input type="checkbox" data-access="hrd" data-id="${e.id}" ${e.role==="hrd"?"checked":""} ${e.system?"disabled":""} aria-label="HRD access for ${esc(e.name)}"></td>
         <td data-l="Admin"><input type="checkbox" data-access="admin" data-id="${e.id}" ${e.admin?"checked":""} aria-label="Admin access for ${esc(e.name)}"></td>
+        <td data-l="2-step">${mfaCell(e)}${e.userId && window.HRM?.mfa && (S.ui.mfaUsers || []).includes(e.userId) && e.id !== S.realEmpId ? ` <button class="btn link small" type="button" data-act="mfa-reset" data-id="${e.id}">${S.ui.mfaReset === e.id ? "Tap again" : "Reset"}</button>` : ""}</td>
         <td class="r">${e.userId ? `<button class="btn sm" type="button" data-act="unlink" data-id="${e.id}">${S.ui.unlink === e.id ? "Click to confirm" : "Unlink"}</button>` : ""}<button class="btn sm" type="button" data-act="preview-as" data-id="${e.id}">${e.userId ? "Preview" : "Act as"}</button></td></tr>`; }).join("")}</tbody></table></div>`;
 }
 function sysBackup(){
@@ -3326,6 +3362,13 @@ document.addEventListener("click", async ev => {
     case "att-template": S.ui.attUp = true; S.ui.attParse = null; render(); return;
     case "att-fmt": S.ui.attFmt = v; S.ui.attParse = null; render(); return;
     case "att-tpl": await attTemplate(v); return;
+    case "mfa-on": S.ui.mfaEnroll = null; S.ui.mfaErr = ""; S.modal = {kind:"mfa"}; renderModal();
+      try { S.ui.mfaEnroll = await window.HRM.mfa.start(); } catch(e){ S.ui.mfaEnroll = {error:e?.message || "Couldn't start. Try again."}; }
+      if(S.modal?.kind === "mfa"){ renderModal(); document.getElementById("mfa-code")?.focus(); } return;
+    case "mfa-off": if(!S.ui.mfaOff){ S.ui.mfaOff = true; render(); setTimeout(() => { S.ui.mfaOff = false; render(); }, 4000); return; }
+      S.ui.mfaOff = false; try { await window.HRM.mfa.disable(); audit("mfa_disabled", nm(S.realEmpId), ""); toast("Two-step verification is off."); } catch(e){ toast(e?.message || "Couldn't turn it off."); } render(); return;
+    case "mfa-reset": if(!realAdmin()) return; if(S.ui.mfaReset !== id){ S.ui.mfaReset = id; render(); setTimeout(() => { if(S.ui.mfaReset === id){ S.ui.mfaReset = null; render(); } }, 4000); return; }
+      S.ui.mfaReset = null; try { await window.HRM.mfa.reset(id); audit("mfa_reset", nm(id), ""); toast(`Two-step verification reset. ${first(id)} sets it up again at the next sign-in.`); S.ui.mfaUsers = null; } catch(e){ toast("Reset failed: " + (e?.message || "server error")); } render(); return;
     case "att-suggest": if(S.ui.attParse){ S.ui.attParse.assign[id] = v; render(); } return;
     case "paytab": S.ui.paytab = v; if(v === "settings") S.ui.payImgLoaded = false; render(); return;
     case "pay-tpl": if(isPayroll()) await payTemplate(); return;
@@ -3434,6 +3477,7 @@ document.addEventListener("submit", async ev => {
   if(s === "review") return saveReview();
   if(s === "cand") return saveCand(f.dataset.id);
   if(s === "emp") return saveEmp();
+  if(s === "mfa") return mfaConfirm();
   if(s === "contract") return saveContract();
   if(s === "quota") return saveQuota();
   if(s === "ann") return saveAnn();

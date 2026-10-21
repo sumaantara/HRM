@@ -92,6 +92,22 @@ Deno.serve(async (req) => {
   const port = Number(env("SMTP_PORT") || 465);
   const transport = nodemailer.createTransport({ host, port, secure: port === 465, auth: { user, pass } });
 
+  if (m.action === "mfa_reset") {
+    // lost / replaced phone: remove the person's authenticator so they set it up again at the next sign-in (Admin / owner only)
+    const empId = String(m.empId || "");
+    if (!/^[A-Za-z0-9_-]{1,60}$/.test(empId)) return json(400, { error: "bad_request" });
+    const admin = createClient(env("SUPABASE_URL"), env("SUPABASE_SERVICE_ROLE_KEY"), { auth: { persistSession: false } });
+    const { data: doc } = await admin.from("docs").select("data").eq("path", "employees/" + empId).maybeSingle();
+    const target = String((doc?.data as Record<string, unknown>)?.userId || "");
+    if (!target) return json(404, { error: "no_account" });
+    const { data: allowed } = await sb.rpc("hrm_mfa_reset_allowed", { target });
+    if (allowed !== true) return json(403, { error: "not_allowed" });
+    const { data: list, error: lerr2 } = await admin.auth.admin.mfa.listFactors({ userId: target });
+    if (lerr2) return json(502, { error: "reset_failed" });
+    for (const f of list?.factors || []) await admin.auth.admin.mfa.deleteFactor({ id: f.id, userId: target });
+    return json(200, { status: "reset", removed: (list?.factors || []).length });
+  }
+
   if (m.action === "invite") {
     if (level < 2) return json(403, { error: "not_allowed" });
     const empId = String(m.empId || "");

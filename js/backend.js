@@ -42,11 +42,71 @@
         if (data === "linked") w = await whoami();
       } catch (e) { /* stays unlinked; the app shows the link screen */ }
     }
+    // two-step verification: required for Admin, HRD, GM/Director, Finance (and anyone who turned it on) — the database
+    // returns no data until the session is verified, this only shows the right screen
+    if (w && w.mfa && w.mfa.required && w.mfa.aal !== "aal2") {
+      entering = false; mfaWho = w;
+      authView = w.mfa.enrolled ? "mfa" : "mfa-setup"; authMsg = ""; showAuth();
+      return;
+    }
     who = w;
     hideAuth();
     readyResolve();
     watchLevel();
+    idleStart();
   }
+  let mfaWho = null, mfaEnroll = null;
+  async function mfaStartEnroll() {
+    const { data: list } = await sb.auth.mfa.listFactors();
+    for (const f of (list && list.all) || []) if (f.factor_type === "totp" && f.status !== "verified") await sb.auth.mfa.unenroll({ factorId: f.id });
+    const { data, error } = await sb.auth.mfa.enroll({ factorType: "totp", friendlyName: "ONEderland HRM " + new Date().toISOString().slice(0, 16) });
+    if (error) throw error;
+    return { id: data.id, qr: data.totp.qr_code, secret: data.totp.secret };
+  }
+  async function mfaVerify(factorId, code) {
+    const c = String(code || "").replace(/\D/g, "");
+    if (c.length !== 6) throw { message: "Enter the 6-digit code from the app." };
+    const { error } = await sb.auth.mfa.challengeAndVerify({ factorId, code: c });
+    if (error) throw /invalid|expired/i.test(error.message) ? { message: "That code isn't right. Enter the code currently shown in the app (it changes every 30 seconds)." } : error;
+  }
+  async function mfaFactorId() {
+    const { data } = await sb.auth.mfa.listFactors();
+    const f = ((data && data.totp) || []).find((x) => x.status === "verified");
+    if (!f) throw { message: "No authenticator is set up for this account." };
+    return f.id;
+  }
+
+  /* ------------------------------------------------------------------ idle sign-out (30 minutes, shared across tabs) */
+  const IDLE_MS = (Number(CFG.idleMinutes) || 30) * 60000, WARN_MS = 2 * 60000, LAST = "hrm.lastActive";
+  const lsGet = (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } };
+  const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch (e) { /* private mode */ } };
+  let lastLocal = Date.now(), idleTimer = null, lastWrite = 0;
+  const lastActive = () => Number(lsGet(LAST)) || lastLocal;   // shared by all tabs (written at most every 10 s)
+  function bump() { lastLocal = Date.now(); const w = $("idle-warn"); if (w || lastLocal - lastWrite > 10000) { lastWrite = lastLocal; lsSet(LAST, String(lastLocal)); } if (w) w.remove(); }
+  async function idleSignOut() {
+    lsSet("hrm.idleOut", "1");
+    try { await sb.auth.signOut({ scope: "local" }); } catch (e) { /* offline */ }
+    location.reload();
+  }
+  function idleTick() {
+    const left = IDLE_MS - (Date.now() - lastActive());
+    if (left <= 0) return idleSignOut();
+    if (left <= WARN_MS) {
+      let w = $("idle-warn");
+      if (!w) { w = document.createElement("div"); w.id = "idle-warn"; w.setAttribute("role", "alertdialog"); w.setAttribute("aria-live", "polite");
+        w.innerHTML = `<div><b>Still there?</b><span>For security you'll be signed out in <time id="idle-left"></time> because there's been no activity.</span></div><button class="btn pri" type="button" id="idle-stay">Stay signed in</button>`;
+        document.body.appendChild(w); }
+      const s = Math.ceil(left / 1000), t = $("idle-left"); if (t) t.textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+    }
+  }
+  function idleStart() {
+    if (idleTimer) return;
+    bump(); lsSet(LAST, String(Date.now()));
+    for (const ev of ["pointerdown", "keydown", "wheel", "touchstart", "scroll", "mousemove"]) window.addEventListener(ev, bump, { passive: true, capture: true });
+    document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") idleTick(); });
+    idleTimer = setInterval(idleTick, 1000);
+  }
+  document.addEventListener("click", (ev) => { if (ev.target && ev.target.id === "idle-stay") bump(); });
   // Re-check access periodically: when HR links/unlinks an account or changes a role, reload into the new access level.
   function watchLevel() {
     const tick = async () => {
@@ -71,6 +131,9 @@
   async function start() {
     const hashErr = LINK.error;
     const { data } = await sb.auth.getSession();
+    const last = Number(lsGet(LAST)) || 0;
+    if (data.session && !setsPassword() && last && Date.now() - last > IDLE_MS) { await idleSignOut(); return; }
+    if (lsGet("hrm.idleOut")) { lsSet("hrm.idleOut", ""); if (!data.session) { showAuth("You were signed out after " + Math.round(IDLE_MS / 60000) + " minutes without activity. Sign in again to continue."); return; } }
     if (data.session && !setsPassword()) {
       try { await enter(); } catch (e) { fatalFromError(e); }
     } else {
@@ -101,7 +164,15 @@
     if (authView === "newpass" || authView === "welcome") body = f(pass("New password (min. 8 characters)", "new-password") +
       `<label class="f"><span>Repeat the password</span><input type="password" name="password2" autocomplete="new-password" required minlength="8"></label>`, authView === "welcome" ? "Set password & sign in" : "Save new password") +
       (authView === "welcome" ? `<p class="auth-hint">You'll use your work email and this password to sign in from now on.</p>` : "");
-    const titles = { signin: "Sign in", forgot: "Reset your password", newpass: "Set a new password", welcome: "Welcome! Set your password" };
+    const code = `<label class="f"><span>6-digit code</span><input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]*" maxlength="7" required placeholder="123 456" style="font-size:1.4rem;letter-spacing:.3em;text-align:center"></label>`;
+    const out = `<p class="auth-alt"><button type="button" class="btn link" data-av="signout">Sign out</button></p>`;
+    if (authView === "mfa") body = `<p class="auth-hint">Open your authenticator app (Google Authenticator, Microsoft Authenticator, Authy…) and enter the code shown for <b>ONEderland HRM</b>.</p>` +
+      f(code, "Verify") + `<p class="auth-hint">Lost your phone? Ask an Admin to reset your two-step verification.</p>` + out;
+    if (authView === "mfa-setup") body = `<p class="auth-hint">${mfaWho && mfaWho.mfa && mfaWho.mfa.mandatory ? "Your access (Admin, HRD, GM/Director or Finance) protects sensitive data, so two-step verification is required." : "You turned on two-step verification for your account."} Set it up once — it takes a minute.</p>
+      <ol class="auth-steps"><li>Install an authenticator app on your phone: <b>Google Authenticator</b>, <b>Microsoft Authenticator</b> or <b>Authy</b>.</li><li>In the app, add an account and scan this QR code.</li><li>Enter the 6-digit code the app shows.</li></ol>
+      <div class="auth-qr">${mfaEnroll ? `<img src="${esc(mfaEnroll.qr)}" alt="QR code for the authenticator app" width="180" height="180"><small>Can't scan? Enter this key in the app:<br><code>${esc(mfaEnroll.secret.replace(/(.{4})/g, "$1 ").trim())}</code></small>` : `<span class="auth-hint">Preparing…</span>`}</div>` +
+      f(code, "Turn on & continue") + out;
+    const titles = { signin: "Sign in", forgot: "Reset your password", newpass: "Set a new password", welcome: "Welcome! Set your password", mfa: "Two-step verification", "mfa-setup": "Set up two-step verification" };
     el.innerHTML = `<div class="auth-card" role="dialog" aria-labelledby="auth-t">
       ${CFG.logo ? `<div class="auth-brand auth-logo"><img src="${esc(CFG.logo)}" alt="${esc(name)}"></div>`
         : `<div class="auth-brand"><span class="logo" aria-hidden="true">${esc(name.replace(/[^A-Za-z]/g, "").slice(0, 2).toUpperCase())}</span><div><b>${esc(name)}</b><small>${esc(CFG.tagline || "Human Resource Management")}</small></div></div>`}
@@ -111,6 +182,7 @@
       <p class="auth-foot">Access is personal. Your actions are recorded under your account.</p></div>`;
     const first = el.querySelector("input");
     if (first) first.focus();
+    if (authView === "mfa-setup" && !mfaEnroll) mfaStartEnroll().then((x) => { mfaEnroll = x; if (authView === "mfa-setup") showAuth(); }).catch((e) => { authMsg = friendly(e); mfaEnroll = { id: "", qr: "", secret: "" }; showAuth(); });
   }
   function hideAuth() { const el = $("auth"); if (el) { el.hidden = true; el.innerHTML = ""; } document.body.classList.remove("auth-on"); }
   function redirectTo() { return CFG.siteUrl || (location.origin + location.pathname); }
@@ -128,6 +200,7 @@
   document.addEventListener("click", (ev) => {
     const b = ev.target.closest && ev.target.closest("[data-av]");
     if (!b || !$("auth") || $("auth").hidden) return;
+    if (b.dataset.av === "signout") { sb.auth.signOut({ scope: "local" }).finally(() => location.reload()); return; }
     authView = b.dataset.av; authMsg = ""; showAuth();
   });
   document.addEventListener("submit", async (ev) => {
@@ -139,6 +212,11 @@
     const btn = form.querySelector("button[type=submit]"); btn.disabled = true;
     try {
       const kind = form.dataset.auth;
+      if (kind === "mfa" || kind === "mfa-setup") {
+        await mfaVerify(kind === "mfa" ? await mfaFactorId() : mfaEnroll && mfaEnroll.id, v.code);
+        mfaEnroll = null; authView = "signin"; await enter();
+        return;
+      }
       if (kind !== "newpass" && kind !== "welcome" && !/^\S+@\S+\.\S+$/.test(email)) throw { message: "Enter a valid email address." };
       if (kind === "signin") {
         const { error } = await sb.auth.signInWithPassword({ email, password: v.password });
@@ -415,7 +493,7 @@
     onAssets: null,
     assetUrl,
     backend: "supabase",
-    async signOut() { await sb.auth.signOut(); location.reload(); },
+    async signOut() { await sb.auth.signOut({ scope: "local" }); location.reload(); },
     async invite(empId) {
       const { data, error } = await sb.functions.invoke("send-email", { body: { action: "invite", empId } });
       if (error) {
@@ -461,6 +539,24 @@
       const { data, error } = await sb.storage.from("payslips").createSignedUrl(path, 600);
       if (error) throw mapErr(error);
       return data.signedUrl;
+    },
+    // two-step verification from inside the app (optional for staff; required roles are handled at sign-in)
+    mfa: {
+      status: () => (who && who.mfa) || { required: false, mandatory: false, enrolled: false, aal: "aal1" },
+      start: mfaStartEnroll,
+      async confirm(id, code) { await mfaVerify(id, code); const w = await whoami(); if (w) who.mfa = w.mfa; return who.mfa; },
+      async disable() {
+        if (who && who.mfa && who.mfa.mandatory) throw { message: "Two-step verification is required for your access." };
+        const { data } = await sb.auth.mfa.listFactors();
+        for (const f of (data && data.all) || []) { const { error } = await sb.auth.mfa.unenroll({ factorId: f.id }); if (error) throw mapErr(error); }
+        await sb.auth.refreshSession(); const w = await whoami(); if (w) who.mfa = w.mfa; return who.mfa;
+      },
+      async users() { const { data, error } = await sb.rpc("hrm_mfa_users"); if (error) throw mapErr(error); return data || []; },
+      async reset(empId) {
+        const { data, error } = await sb.functions.invoke("send-email", { body: { action: "mfa_reset", empId } });
+        if (error) { let d = {}; try { d = await error.context.json(); } catch (e) { /* none */ } throw { message: d.error === "not_allowed" ? "only Admin can reset two-step verification" : String(d.error || error.message || "server error").replace(/_/g, " ") }; }
+        return data;
+      },
     },
     who: () => who,
   };

@@ -41,6 +41,13 @@ app changes their access within a minute. A profile set to **Resigned** loses ac
 3. The person clicks **Set my password**, chooses a password and lands in the app — the account is already
    connected to their profile (verified email). Later sign-ins: work email + password, or *Forgot password?*.
 
+### Sign-in security
+
+- **Two-step verification (authenticator app, TOTP)** is **required** for the owner, Admin, HRD, GM/Director (job level with GM access) and anyone with Payroll access. It's **optional** for other staff (My Profile → Sign-in security); once someone turns it on it's required for them too.
+- Enforced in the database (`0006_mfa.sql`): until the session is verified with the code (JWT `aal2`), `hrm_level()` is 0 and payroll / own-payslip checks return nothing — a stolen password alone gives no data.
+- First sign-in after getting such access shows a QR code to scan with Google Authenticator, Microsoft Authenticator or Authy. Lost phone: an Admin uses **Reset 2-step** on the person's profile (or System → Accounts & Access); the owner's own authenticator can only be reset by the owner, or in the Supabase dashboard (Authentication → Users → the user → remove MFA factor).
+- **Idle sign-out:** after 30 minutes without activity (shared across tabs; warning 2 minutes before) the session ends. Reopening the site after more than 30 minutes away also signs out. Optional extra server-side limit on paid Supabase plans: Authentication → Sessions → Inactivity timeout.
+
 ### How employees, attendance and payroll connect
 
 - **Employee ID** (e.g. `ONE-0024`) is the key everywhere a person types or uploads data: employee import, daily/WFH attendance sheets and the salary sheet.
