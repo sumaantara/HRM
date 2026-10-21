@@ -20,7 +20,7 @@ const json = (status: number, body: unknown) =>
   new Response(JSON.stringify(body), { status, headers: { ...cors, "Content-Type": "application/json" } });
 const esc = (s: unknown) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 const cut = (s: unknown, n: number) => String(s ?? "").slice(0, n);
-const VIEWS = new Set(["dashboard", "approvals", "myrequests", "reviews", "announcements", "profile", "reminders", "directory"]);
+const VIEWS = new Set(["dashboard", "approvals", "myrequests", "reviews", "announcements", "profile", "reminders", "directory", "payslips"]);
 
 type Mail = {
   to?: unknown; subject?: unknown; body?: unknown;

@@ -78,7 +78,7 @@ const DEFAULT_CONFIG = {
 /* ================= state ================= */
 const S = {
   mode:"loading", db:null, mcp:undefined, D:{employees:[],requests:[],candidates:[],tasks:[],reviews:[],reminders:[],notifs:[],announcements:[],attendance:[],attImports:[],backups:[]},
-  R:{employees:[],private:[],requests:[],candidates:[],tasks:[],reviews:[],reminders:[],notifs:[],announcements:[],attendance:[],attImports:[],backups:[],dec:[],links:[],rd:[],ph:[],sub:[],ingest:null,sync:null},
+  R:{employees:[],private:[],requests:[],candidates:[],tasks:[],reviews:[],reminders:[],notifs:[],announcements:[],attendance:[],attImports:[],backups:[],dec:[],links:[],rd:[],ph:[],sub:[],payslips:[],payruns:[],ingest:null,sync:null},
   pv:{}, P:{}, prof:{}, profAsk:new Set(), errors:[], mySubs:[], uid:null, who:null, user:null, canEdit:false, canWrite:null, isOwner:false, realEmpId:null, preview:null, loadedAll:false, offline:false,
   config:clone(DEFAULT_CONFIG), me:null, view:"dashboard", prm:{}, pop:null, modal:null, drafts:{}, ui:{}, loaded:{}, q:""
 };
@@ -238,6 +238,7 @@ const NOTIFY = {
   quota:             ["Leave quota changed", "Employee", "cal", 1, true, "People"],
   note:              ["New note on profile", "Employee", "file", 3, false, "People"],
   account:           ["Account connected", "Employee", "shield", 5, false, "People"],
+  payslip:           ["Payslip published", "Employee", "doc", 5, true, "Payroll"],
 };
 const LEGACY_NOTIF = {review_task:"onTask"};
 const emailOn = kind => { const n = cfg().notify || {}; if(kind in n) return !!n[kind]; const l = LEGACY_NOTIF[kind]; if(l && cfg().email && l in cfg().email) return !!cfg().email[l]; return !!(NOTIFY[kind] && NOTIFY[kind][4]); };
@@ -289,9 +290,9 @@ const dv = (k, n, d) => (S.drafts[k] && n in S.drafts[k]) ? S.drafts[k][n] : d;
    rd/<uid>, ph/<uid>   per-person read receipts and self-uploaded profile photo
    audit/<uid>/m/<yyyy-mm>  each person's own monthly audit trail
    requests, notifs, counters   shared working data (Contributors write) */
-const APP_VERSION = "3.5.0", SCHEMA = 2;
-const PRIVATE_FIELDS = ["phone","gender","birthDate","exitReason","contract","contracts","notes","quotaLog"];
-const SUB_COLS = ["employees","private","requests","candidates","tasks","reviews","reminders","notifs","announcements","attendance","attImports","backups","dec","links","rd","ph","sub"];
+const APP_VERSION = "3.6.0", SCHEMA = 2;
+const PRIVATE_FIELDS = ["phone","gender","birthDate","address","exitReason","contract","contracts","notes","quotaLog"];
+const SUB_COLS = ["employees","private","requests","candidates","tasks","reviews","reminders","notifs","announcements","attendance","attImports","backups","dec","links","rd","ph","sub","payslips","payruns"];
 const CORE_COLS = ["employees","requests","tasks","notifs","announcements","attendance"];
 const BACKUP_COLS = ["employees","private","requests","candidates","tasks","reviews","reminders","notifs","announcements","attendance","attImports","backups","dec","links","rd","ph","counters"];
 const DB_RULES = [
@@ -715,7 +716,8 @@ function navItems(){
   const time = []; if(isLead()) time.push(["approvals","Approvals","check",n]);
   time.push(["calendar","Team Calendar","cal"],["apply","Apply Request","plus"],["myrequests","My Requests","file"]);
   g.push(["Time Off & WFH", time]);
-  g.push(["Me", [["profile","My Profile","user"]]]);
+  if(isPayroll()) g.push(["Finance", [["payroll","Payroll","doc"]]]);
+  g.push(["Me", [["profile","My Profile","user"],["payslips","My Payslips","file"]]]);
   const adm = []; if(isMgmt()) adm.push(["settings","Settings","cog"]); if(realAdmin()) adm.push(["system","System","shield"]); if(adm.length) g.push(["Administration", adm]);
   return g;
 }
@@ -1243,10 +1245,10 @@ function vDirectory(){
 function vProfile(){
   const id = S.prm.id || S.me, e = emp(id); if(!e) return `<div class="card empty">Employee not found.</div>`;
   const priv = canSeePrivate(id), tab = S.ui.ptab || "overview", self = id === S.me;
-  const tabs = [["overview","Overview"],["contract","Contract"],["history","History & Notes"],["leave","Leave & Quota"],["attendance","Attendance"],["performance","Performance"]].filter(([k]) => k === "overview" || priv);
+  const tabs = [["overview","Overview"],["contract","Contract"],["history","History & Notes"],["leave","Leave & Quota"],["attendance","Attendance"],["performance","Performance"],["payslips","Payslips"]].filter(([k]) => k === "overview" || (k === "payslips" ? (self || isPayroll()) && !e.system : priv));
   if(!tabs.some(t => t[0] === tab)) S.ui.ptab = "overview";
   const cs = contractState(e.contract), sup = e.supervisorId;
-  const body = {overview:pOverview, contract:pContract, history:pHistory, leave:pLeave, attendance:pAttendance, performance:pPerformance}[S.ui.ptab||"overview"](e);
+  const body = {overview:pOverview, contract:pContract, history:pHistory, leave:pLeave, attendance:pAttendance, performance:pPerformance, payslips:pPayslips}[S.ui.ptab||"overview"](e);
   return `${!self ? `<div><button class="btn link" type="button" data-act="go" data-v="directory">${ic("left")}Employees Directory</button></div>` : ""}
   <section class="card"><div class="card-b row" style="gap:20px;align-items:center"><div class="avwrap">${av(e.id,"lg")}${canEditPhoto(e.id) ? `<label class="avbtn" title="Change photo"><input type="file" accept="image/*" data-photo="${e.id}" aria-label="Change profile photo">${ic("edit")}</label>` : ""}
       ${canEditPhoto(e.id) && e.photo ? `<button class="btn link small" type="button" data-act="photo-del" data-id="${e.id}" style="display:block;margin:6px auto 0">Remove</button>` : ""}</div>
@@ -1890,6 +1892,192 @@ function pAttendance(e){
       <td data-l="Status">${attPill(d.status)}${d.type && d.status === "leave" ? ` <span class="small muted">${esc(d.type)}</span>` : ""}</td></tr>`).join("")}</tbody></table></div></section>`}`;
 }
 
+/* ---------- payroll & payslips ----------
+   Payroll staff (employee flag "payroll", HRD, Admin) upload the month's salary sheet; the server (edge function "payslip")
+   builds one PDF per employee in the company layout, protects it with the employee's date of birth (DDMMYYYY) and stores it
+   privately. Each employee downloads their own payslips from My Payslips; nobody else (except payroll) can read them. */
+const isPayroll = () => { const m = realMe(); return S.mode !== "db" ? isHR() : !!(S.isOwner || m?.admin || m?.payroll || m?.role === "hrd"); };
+const PAY_DEFAULT = {company:"PT. SATU IMPIAN BERSAMA", signerName:"", signerTitle:"Accounting", prefix:"SK-PAYSLIP/OE",
+  income:["Basic Salary","Transport + Phone","Employee Incentive","Overtime","THR","Commission"], deduction:["BPJS Ketenagakerjaan","BPJS Kesehatan","PPh 21","Loan"]};
+const paySet = () => Object.assign({}, PAY_DEFAULT, (S.R.payruns || []).find(x => x.id === "settings") || {});
+const ROMAN = ["I","II","III","IV","V","VI","VII","VIII","IX","X","XI","XII"];
+const periodLabel = p => { const [y, m] = String(p).split("-").map(Number); return m ? `${MONL[m-1]} ${y}` : p; };
+const rp = n => "Rp " + Number(n || 0).toLocaleString("id-ID", {minimumFractionDigits:0, maximumFractionDigits:2});
+const rpk = n => `<span class="kmoney">${rp(n)}</span>`;
+const mySlips = id => (S.R.payslips || []).filter(x => x.empId === id).sort((a,b) => b.period.localeCompare(a.period));
+const PW_HINT = "The PDF is protected with a password: your date of birth as DDMMYYYY (e.g. born 15 July 1994 → 15071994).";
+
+async function downloadSlip(x){
+  const e = emp(x.empId);
+  try { await window.HRM.downloadPayslip(x.file, `Payslip_${(e?.name || x.empId).replace(/[^A-Za-z0-9]+/g, "_")}_${periodLabel(x.period).replace(" ", "_")}.pdf`); }
+  catch(err){ toast("The payslip couldn't be downloaded. Try again."); }
+}
+function pPayslips(e){
+  const list = mySlips(e.id), self = e.id === S.me;
+  return `<section class="card"><div class="card-h"><span class="tile c5">${ic("doc")}</span><h2>Payslips</h2><span class="tag">${list.length}</span></div>
+    <div class="card-b"><div class="note">${ic("shield")}<div>${self ? PW_HINT : `Only ${esc(first(e.id))} and payroll can open these. The PDF password is ${esc(first(e.id))}'s date of birth (DDMMYYYY).`}</div></div></div>
+    ${list.length ? `<div class="tw"><table class="t rt"><thead><tr><th>Period</th><th>Payslip no.</th><th>Pay date</th><th class="r">Take home pay</th><th></th></tr></thead><tbody>
+      ${list.map(x => `<tr><td class="wide"><b style="font-weight:600">${esc(periodLabel(x.period))}</b>${x.version > 1 ? ` <span class="tag">revised</span>` : ""}</td><td data-l="No" class="small">${esc(x.no || "—")}</td><td data-l="Pay date">${fmt(x.payDate)}</td>
+        <td data-l="Take home" class="r num"><b>${rp(x.takeHome)}</b></td><td class="r"><button class="btn sm pri" type="button" data-act="slip-dl" data-id="${esc(x.id)}">${ic("download")}Download PDF</button></td></tr>`).join("")}</tbody></table></div>`
+    : `<div class="empty"><b>No payslips yet</b>${self ? "Your payslip appears here as soon as Finance publishes it — you'll also get a notification." : "Nothing published for this person yet."}</div>`}</section>`;
+}
+function vMyPayslips(){ const e = me(); if(!e) return `<div class="card empty">Connect your account first.</div>`;
+  return `<div class="page-h"><div><h1>My Payslips</h1><p>Your monthly payslips, issued by Finance. Download any month, any time.</p></div></div>` + pPayslips(e); }
+
+/* payroll page */
+function vPayroll(){
+  if(!isPayroll()) return `<div class="card empty">Payroll is only available to Finance, HRD and Admin.</div>`;
+  const tab = S.ui.paytab || "runs";
+  const head = `<div class="page-h"><div><h1>Payroll</h1><p>Upload the month's salary sheet, check it, and publish password-protected payslips to every employee's profile. Employees download them from My Payslips.</p></div>
+    <div class="row"><button class="btn" type="button" data-act="pay-tpl">${ic("doc")}Salary template</button><button class="btn pri" type="button" data-act="pay-upload">${ic("upload")}Upload salaries</button></div></div>`;
+  const tabs = `<section class="card"><div class="tabs" role="tablist" style="padding:0 14px">${[["runs","Payslips"],["settings","Payslip layout"]].map(([k,l]) => `<button type="button" role="tab" data-act="paytab" data-v="${k}" aria-selected="${tab===k}">${l}</button>`).join("")}</div>`;
+  return head + (S.ui.payUp ? payUploadPanel() : "") + tabs + (tab === "settings" ? paySettingsBody() : payRunsBody()) + `</section>`;
+}
+function payRunsBody(){
+  const slips = S.R.payslips || [], periods = [...new Set(slips.map(x => x.period))].sort().reverse();
+  if(!periods.length) return `<div class="empty"><b>No payslips published yet</b>Download the salary template, fill in the amounts and upload it.</div>`;
+  const sel = S.ui.payPeriod && periods.includes(S.ui.payPeriod) ? S.ui.payPeriod : periods[0];
+  const list = slips.filter(x => x.period === sel).sort((a,b) => nm(a.empId).localeCompare(nm(b.empId)));
+  const tot = k => list.reduce((s, x) => s + (Number(x[k]) || 0), 0);
+  return `<div class="card-b row" style="justify-content:space-between"><label class="f" style="max-width:240px"><span>Period</span><select id="pay-period">${periods.map(p => `<option value="${p}" ${p===sel?"selected":""}>${esc(periodLabel(p))}</option>`).join("")}</select></label>
+      <div class="grid kpis k4" style="flex:1;max-width:760px">${kpi("Payslips", list.length, esc(periodLabel(sel)))}${kpi("Total income", rpk(tot("gross")), "gross")}${kpi("Deductions", rpk(tot("deductions")), "BPJS, tax, loans")}${kpi("Take home", rpk(tot("takeHome")), "paid out")}</div></div>
+    <div class="tw"><table class="t rt"><thead><tr><th>Employee</th><th>Payslip no.</th><th class="r">Income</th><th class="r">Deductions</th><th class="r">Take home</th><th>Issued</th><th></th></tr></thead><tbody>
+    ${list.map(x => `<tr><td class="wide">${who(x.empId, emp(x.empId)?.division || "")}</td><td data-l="No" class="small">${esc(x.no || "")}</td><td data-l="Income" class="r num">${rp(x.gross)}</td><td data-l="Deductions" class="r num">${rp(x.deductions)}</td>
+      <td data-l="Take home" class="r num"><b>${rp(x.takeHome)}</b></td><td data-l="Issued" class="small muted">${fmt(String(x.issuedAt || "").slice(0,10))}${x.version > 1 ? ` · v${x.version}` : ""}</td><td class="r"><button class="btn sm" type="button" data-act="slip-dl" data-id="${esc(x.id)}">${ic("download")}PDF</button></td></tr>`).join("")}</tbody></table></div>`;
+}
+function paySettingsBody(){
+  const c = paySet(), u = S.ui.payImg || {};
+  if(!S.ui.payImgLoaded && window.HRM){ S.ui.payImgLoaded = true; Promise.all(["letterhead","stamp","signature"].map(async k => [k, c[k] ? await window.HRM.payAssetUrl(c[k]).catch(() => "") : ""])).then(r => { S.ui.payImg = Object.fromEntries(r); render(); }); }
+  const t = (k, l, hint) => `<label class="f"><span>${l}</span><input type="text" data-payset="${k}" value="${esc(Array.isArray(c[k]) ? c[k].join(", ") : c[k] || "")}">${hint ? `<small>${hint}</small>` : ""}</label>`;
+  const pic = (k, l, hint) => `<div class="f"><span>${l}</span><div class="pay-img">${u[k] ? `<img src="${esc(u[k])}" alt="${esc(l)}">` : `<span class="small muted">Not uploaded</span>`}</div>
+    <label class="btn sm" style="width:max-content"><input type="file" accept="image/png,image/jpeg" data-payimg="${k}" hidden>${ic("upload")}${c[k] ? "Replace" : "Upload"}</label><small>${hint}</small></div>`;
+  return `<div class="card-b stack"><div class="note">${ic("info")}<div>These details appear on every payslip. Images are stored privately — only payroll staff and the payslip generator can read them. Use PNG with a transparent background for the stamp and signature.</div></div>
+    <div class="fields">${t("company","Company name","Shown when no letterhead is uploaded and in the footer.")}${t("prefix","Payslip number format","Numbers look like 106/<b>SK-PAYSLIP/OE</b>/VII/2026 when the sheet leaves “Payslip No” empty.")}
+      ${t("signerName","Signed by (name)","e.g. the Accounting lead")}${t("signerTitle","Signer title","Printed above the signature, e.g. Accounting")}</div>
+    <div class="fields">${t("income","Income items","Comma-separated, in payslip order. The salary template uses these as columns.")}${t("deduction","Deduction items","Comma-separated.")}</div>
+    <div class="fields">${pic("letterhead","Letterhead (full width)","Top banner with logo and company name, about 1300 × 260 px.")}${pic("stamp","Company stamp","Official stamp (cap perusahaan).")}${pic("signature","Authorised signature","Signature of the person named above.")}</div>
+    <div class="row"><button class="btn" type="button" data-act="pay-preview-sample">${ic("doc")}Preview a payslip</button><span class="small muted">Uses the first employee and sample amounts — nothing is published.</span></div></div>`;
+}
+async function savePaySet(k, v){
+  const cur = Object.assign({id:"settings"}, (S.R.payruns || []).find(x => x.id === "settings") || {});
+  cur[k] = (k === "income" || k === "deduction") ? String(v).split(",").map(x => x.trim()).filter(Boolean).slice(0, 12) : String(v).trim().slice(0, 120);
+  await run(async () => { await S.db.collection("payruns").doc("settings").set(cur); localPut("payruns", cur); audit("payslip_settings_changed", k, ""); }, "Saved.");
+}
+async function savePaySetRaw(k, v){
+  const cur = Object.assign({id:"settings"}, (S.R.payruns || []).find(x => x.id === "settings") || {}); cur[k] = v;
+  await S.db.collection("payruns").doc("settings").set(cur); localPut("payruns", cur); audit("payslip_settings_changed", k, "image");
+}
+async function payTemplate(){
+  const c = paySet();
+  try { const X = await loadXLSX(), wb = X.utils.book_new();
+    const head = ["Employee ID","Name","Payslip No","Division"].concat(c.income, c.deduction);
+    const rows = activeE().filter(e => !e.system).sort((a,b) => a.name.localeCompare(b.name)).map(e => [e.empNo, e.name, "", ""].concat(c.income.map(() => ""), c.deduction.map(() => "")));
+    const ws = X.utils.aoa_to_sheet([head].concat(rows)); ws["!cols"] = head.map(h => ({wch:Math.max(12, h.length + 3)})); X.utils.book_append_sheet(wb, ws, "Salaries");
+    const help = X.utils.aoa_to_sheet([["How to fill the salary sheet"],[""],["• One row per employee. Employee ID must match the HRM (it's pre-filled for all active employees)."],["• Amounts in rupiah without “Rp” or dots, e.g. 10500000 (decimals with a point: 2101595.15). Leave empty or 0 for none."],["• Payslip No is optional — leave it empty to number automatically (e.g. 106/" + c.prefix + "/VII/2026)."],["• Division is optional — leave it empty to use the division on the employee's profile."],["• Choose the month and pay date in the HRM when uploading. Uploading the same month again replaces those payslips (marked revised)."],["• Each payslip PDF is protected with the employee's date of birth (DDMMYYYY). Employees without a date of birth on their profile are skipped."]]);
+    help["!cols"] = [{wch:120}]; X.utils.book_append_sheet(wb, help, "How to use");
+    await download(`ONEderland_Salary_Template.xlsx`, X.write(wb, {type:"array", bookType:"xlsx"})); }
+  catch(e){ toast("The template couldn't be created."); }
+}
+// amounts: numbers as-is; text in Indonesian (8.000.000 / 2.101.595,15) or English (8,000,000 / 2101595.15) style
+const amount = v => { if(v == null || v === "") return 0; if(typeof v === "number") return v;
+  let t = String(v).replace(/rp\.?/i, "").replace(/\s/g, ""); if(t === "" || t === "-") return 0;
+  if(/,\d{1,2}$/.test(t)) t = t.replace(/\./g, "").replace(",", ".");
+  else if(/^\d{1,3}(\.\d{3})+$/.test(t)) t = t.replace(/\./g, "");
+  else t = t.replace(/,/g, "");
+  const n = Number(t); return isFinite(n) ? n : NaN; };
+async function readPayFile(file){
+  S.ui.payParse = {loading:true, file:file.name}; render();
+  try { const X = await loadXLSX(), wb = X.read(await file.arrayBuffer(), {type:"array"});
+    const name = wb.SheetNames.find(n => /salar|gaji|payroll/i.test(n)) || wb.SheetNames[0];
+    const rows = X.utils.sheet_to_json(wb.Sheets[name], {header:1, raw:true, defval:""});
+    S.ui.payParse = {file:file.name, rows, period:S.ui.payParse?.period || today().slice(0,7), payDate:""}; render(); }
+  catch(e){ S.ui.payParse = {error:"This file couldn't be read. Upload the salary template (.xlsx)."}; render(); }
+}
+function buildPay(P){
+  const c = paySet(), rows = P.rows || [];
+  const hi = rows.findIndex(r => r.some(x => /^employee\s*id$/i.test(String(x).trim())));
+  if(hi < 0) return {items:[], problems:["The sheet needs an “Employee ID” column — use the salary template."], warn:[]};
+  const H = rows[hi].map(x => String(x).replace(/\s+/g, " ").trim().toLowerCase()), col = n => H.indexOf(n.toLowerCase());
+  const ci = col("employee id"), cn = col("name"), cno = col("payslip no"), cdiv = col("division");
+  const items = [], problems = [], warn = [], seen = new Set();
+  const existing = (S.R.payslips || []).filter(x => x.period === P.period);
+  let seq = existing.reduce((m, x) => Math.max(m, parseInt(String(x.no)) || 0), 0);
+  const [y, m] = P.period.split("-").map(Number);
+  for(const r of rows.slice(hi + 1)){
+    if(!r.some(x => String(x).trim() !== "")) continue;
+    const e = matchEmp(r[ci], cn >= 0 ? r[cn] : ""); const label = `${r[ci] || ""} ${cn >= 0 ? r[cn] : ""}`.trim();
+    if(!e){ problems.push(`No employee matches “${label}”.`); continue; }
+    if(seen.has(e.id)){ problems.push(`${e.name} appears twice.`); continue; } seen.add(e.id);
+    const inc = c.income.map(k => [k, amount(col(k) >= 0 ? r[col(k)] : 0)]), ded = c.deduction.map(k => [k, amount(col(k) >= 0 ? r[col(k)] : 0)]);
+    const bad = inc.concat(ded).filter(([, v]) => isNaN(v) || v < 0);
+    if(bad.length){ problems.push(`${e.name}: “${bad.map(b => b[0]).join(", ")}” isn't a valid amount.`); continue; }
+    const gross = inc.reduce((s, [, v]) => s + v, 0), dd = ded.reduce((s, [, v]) => s + v, 0);
+    if(!gross){ warn.push(`${e.name}: no income — skipped.`); continue; }
+    const prev = existing.find(x => x.empId === e.id);
+    const no = (cno >= 0 && String(r[cno]).trim()) || prev?.no || `${++seq}/${c.prefix}/${ROMAN[m-1]}/${y}`;
+    items.push({empId:e.id, period:P.period, payDate:P.payDate || `${P.period}-28`, no, division:cdiv >= 0 ? String(r[cdiv]).trim() : "", income:inc, deduction:ded, gross, deductions:dd, takeHome:gross - dd, revised:!!prev});
+  }
+  for(const k of c.income.concat(c.deduction)) if(col(k) < 0) warn.push(`Column “${k}” not found — treated as 0.`);
+  return {items, problems, warn};
+}
+function payUploadPanel(){
+  const P = S.ui.payParse, close = `<button class="ib plain" type="button" data-act="pay-upclose" aria-label="Close">${ic("x")}</button>`;
+  if(!P || P.error) return `<section class="card"><div class="card-h"><span class="tile c5">${ic("upload")}</span><h2>Upload salaries</h2>${close}</div><div class="card-b stack">
+    <label class="drop" id="pay-drop"><input type="file" id="pay-file" accept=".xlsx,.xls,.csv"><span class="tile c1">${ic("upload")}</span><b>Drop the filled salary template here or click to choose</b><span class="small muted">One row per employee with the income and deduction amounts.</span></label>
+    ${P?.error ? `<ul class="errs"><li>${esc(P.error)}</li></ul>` : ""}</div></section>`;
+  if(P.loading) return `<section class="card"><div class="empty"><b>Reading ${esc(P.file)}…</b></div></section>`;
+  const R = buildPay(P), tot = R.items.reduce((s, x) => s + x.takeHome, 0), revised = R.items.filter(x => x.revised).length;
+  const miss = S.ui.payMissing || {};
+  return `<section class="card"><div class="card-h"><span class="tile c5">${ic("doc")}</span><h2>${esc(P.file)}<br><span class="small muted" style="font-family:var(--f-body);font-weight:500">${R.items.length} payslip(s) ready</span></h2>${close}</div>
+    <div class="card-b stack">
+      <div class="fields"><label class="f"><span>Salary month</span><input type="month" id="pay-month" value="${esc(P.period)}"></label><label class="f"><span>Pay date</span><input type="date" id="pay-date" value="${esc(P.payDate || `${P.period}-28`)}"></label></div>
+      <div class="grid kpis k4">${kpi("Employees", R.items.length, esc(periodLabel(P.period)))}${kpi("Total take home", rpk(tot), "to be paid")}${kpi("Replaces", revised, revised ? "already published — will be marked revised" : "new month", revised ? "warn" : "")}${kpi("Problems", R.problems.length, R.problems.length ? "fix and upload again" : "none", R.problems.length ? "warn" : "")}</div>
+      ${R.problems.length ? `<ul class="errs">${R.problems.slice(0,10).map(p => `<li>${esc(p)}</li>`).join("")}</ul>` : ""}
+      ${R.warn.length ? `<div class="note warn">${ic("alert")}<div>${R.warn.slice(0,8).map(esc).join("<br>")}</div></div>` : ""}
+      ${Object.keys(miss).length ? `<div class="note warn">${ic("alert")}<div><b>Missing on the profile:</b> ${Object.entries(miss).map(([id, f]) => `${esc(nm(id))} (${f.map(x => x === "birthDate" ? "date of birth — needed for the password" : x).join(", ")})`).join("; ")}. People without a date of birth are skipped; ask HRD to complete the profile.</div></div>` : ""}
+      <div class="tw" style="border:1px solid var(--line);border-radius:10px"><table class="t rt"><thead><tr><th>Employee</th><th>Payslip no.</th><th class="r">Income</th><th class="r">Deductions</th><th class="r">Take home</th></tr></thead><tbody>
+        ${R.items.slice(0, 50).map(x => `<tr><td data-l="Employee">${esc(nm(x.empId))}${x.revised ? ` <span class="tag">revised</span>` : ""}</td><td data-l="No" class="small">${esc(x.no)}</td><td data-l="Income" class="r num">${rp(x.gross)}</td><td data-l="Deductions" class="r num">${rp(x.deductions)}</td><td data-l="Take home" class="r num"><b>${rp(x.takeHome)}</b></td></tr>`).join("")}</tbody></table></div>
+      ${S.ui.payProgress ? `<div><b>Publishing… ${S.ui.payProgress.done}/${S.ui.payProgress.total}</b>${meter(S.ui.payProgress.done, Math.max(1, S.ui.payProgress.total), 2)}</div>` :
+      `<div class="row end"><button class="btn" type="button" data-act="pay-preview" ${R.items.length ? "" : "disabled"}>${ic("doc")}Preview first payslip</button><button class="btn pri" type="button" data-act="pay-publish" ${R.items.length && !R.problems.length ? "" : "disabled"}>${ic("check")}Publish ${R.items.length} payslip(s)</button></div>`}
+    </div></section>`;
+}
+async function payCheck(){
+  const P = S.ui.payParse; if(!P || !P.rows) return; const R = buildPay(P); if(!R.items.length) return;
+  try { const all = {}; for(let i = 0; i < R.items.length; i += 25){ const r = await window.HRM.payslip("check", R.items.slice(i, i + 25).map(x => ({empId:x.empId, period:x.period}))); Object.assign(all, r.missing || {}); }
+    S.ui.payMissing = all; render(); } catch(e){}
+}
+function openPdf(b64){
+  const bin = atob(b64), a = new Uint8Array(bin.length); for(let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i);
+  const url = URL.createObjectURL(new Blob([a], {type:"application/pdf"})); const w = window.open(url, "_blank"); if(!w) download("Payslip_preview.pdf", a); setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+async function payPreview(item){
+  toast("Building preview…");
+  try { const r = await window.HRM.payslip("preview", [item]); if(r.preview) openPdf(r.preview); if(r.hasBirthDate === false) toast(`${nm(item.empId)} has no date of birth — the real payslip can't be password-protected yet.`); }
+  catch(e){ toast("Preview failed: " + (e?.message || "server error")); }
+}
+async function payPublish(){
+  const P = S.ui.payParse, R = buildPay(P); if(!R.items.length || R.problems.length) return;
+  S.ui.payProgress = {done:0, total:R.items.length}; render();
+  const ok = [], fail = [];
+  for(let i = 0; i < R.items.length; i += 8){
+    const batch = R.items.slice(i, i + 8);
+    try { const r = await window.HRM.payslip("generate", batch); for(const x of r.results || []) (x.ok ? ok : fail).push(x); }
+    catch(e){ for(const x of batch) fail.push({empId:x.empId, error:e?.message || "server error"}); }
+    S.ui.payProgress.done = Math.min(R.items.length, i + batch.length); render();
+  }
+  for(const x of ok){ const it = R.items.find(y => y.empId === x.empId);
+    await notify(x.empId, `Your ${periodLabel(P.period)} payslip ${x.version > 1 ? "was updated" : "is ready"}`, `Download it from My Payslips · password = your date of birth (DDMMYYYY)`, "payslips", x.empId, "payslip",
+      {heading:`Your ${periodLabel(P.period)} payslip ${x.version > 1 ? "was updated" : "is ready"}`, intro:`Your payslip for ${periodLabel(P.period)} is available in the HRM.${x.version > 1 ? " It replaces the earlier version." : ""}\n\n${PW_HINT}`, rows:[["Period", periodLabel(P.period)], ["Payslip no.", it?.no || ""], ["Pay date", fmt(it?.payDate)]], tone:"ok", cta:{label:"Download payslip", go:"payslips", ref:""}}); }
+  const run0 = {id:P.period, period:P.period, file:P.file, count:ok.length, failed:fail.length, takeHome:R.items.filter(x => ok.some(o => o.empId === x.empId)).reduce((s, x) => s + x.takeHome, 0), by:S.me, at:new Date().toISOString()};
+  try { await S.db.collection("payruns").doc(P.period).set(run0); } catch(e){}
+  audit("payslips_published", periodLabel(P.period), `${ok.length} published${fail.length ? `, ${fail.length} failed` : ""}`);
+  S.ui.payProgress = null;
+  const why = {no_birth_date:"no date of birth", not_found:"employee not found", storage_failed:"storage error", record_failed:"database error"};
+  if(fail.length) toast(`${ok.length} published. ${fail.length} not published: ${fail.slice(0,3).map(f => `${nm(f.empId)} (${why[f.error] || f.error})`).join(", ")}${fail.length > 3 ? "…" : ""}`);
+  else toast(`${ok.length} payslip(s) published and employees notified.`);
+  if(ok.length){ S.ui.payUp = false; S.ui.payParse = null; S.ui.payMissing = null; S.ui.payPeriod = P.period; }
+  render();
+}
 /* ---------- organization settings ---------- */
 const ORG = {offices:["Offices","office"], divisions:["Divisions","division"], departments:["Departments","dept"]};
 function orgSection(kind, ro){
@@ -2251,9 +2439,10 @@ function mEmp(){
     ${f("position","Position")}${orgSelect(k,"dept","Department","departments",base.dept)}${orgSelect(k,"division","Division","divisions",base.division)}${orgSelect(k,"office","Office","offices",base.office)}
     <label class="f"><span>Direct supervisor</span><select name="supervisorId"><option value="">None</option>${E().filter(x => x.id !== e0?.id).map(x => `<option value="${x.id}" ${dv(k,"supervisorId",base.supervisorId||"")===x.id?"selected":""}>${esc(x.name)} — ${esc(x.position)}</option>`).join("")}</select></label>
     <label class="f"><span>Job level</span><select name="jobLevel"><option value="">Select job level</option>${[...new Set(JOBS().map(j => j.name).concat(base.jobLevel ? [base.jobLevel] : []))].map(j => `<option ${dv(k,"jobLevel",base.jobLevel||"")===j?"selected":""}>${esc(j)}</option>`).join("")}</select><small>Job levels and their access are managed in Settings → Organization.</small></label>
+    ${isHR() ? `<label class="chk" style="align-self:end;padding-bottom:10px"><input type="checkbox" name="payroll" ${dv(k,"payroll",!!base.payroll)?"checked":""}><span><b>Payroll access</b><br><span class="small muted">Finance: uploads salary data and publishes payslips. Sees salaries, not other confidential HR data.</span></span></label>` : ""}
     ${isAdmin() ? `<label class="chk" style="align-self:end;padding-bottom:10px"><input type="checkbox" name="hrAdmin" ${dv(k,"hrAdmin",base.role==="hrd")?"checked":""}><span><b>HRD access</b><br><span class="small muted">Manages employees, quotas, recruitment, attendance and HR settings.</span></span></label>`
       : `<div class="f"><span>System access</span><span class="small muted" style="padding-top:8px">${base.role==="hrd" ? "HRD access" : "Standard"} · only Admin can change this</span></div>`}
-    ${f("joinDate","Join date","date")}${f("birthDate","Date of birth","date")}
+    ${f("joinDate","Join date","date")}${f("birthDate","Date of birth","date")}${f("address","Address","text","full")}
     <label class="f"><span>Status</span><select name="status">${["Probation","Active","Resigned"].map(s => `<option ${dv(k,"status",base.status)===s?"selected":""}>${s}</option>`).join("")}</select></label>
     ${dv(k,"status",base.status) === "Resigned" ? `${f("exitDate","Last working day","date")}<label class="f"><span>Exit reason</span><input type="text" name="exitReason" value="${esc(dv(k,"exitReason",base.exitReason||""))}" placeholder="e.g. Resigned, contract ended"></label>` : ""}</div>
     ${isNew ? `<div><h3 style="margin-bottom:10px">First contract</h3><div class="fields">
@@ -2280,7 +2469,8 @@ async function saveEmp(){
   const k = "emp-" + (S.modal.id || S.modal.cand || "new");
   const base = e0 || {name:fromCand?.name||"", email:fromCand?.email||"", phone:fromCand?.phone||"", position:fromCand?.position||"", dept:fromCand?.dept||"", gender:"", role:"employee", jobLevel:"Staff", supervisorId:"", joinDate:addDays(today(),7), status:"Probation", empNo:nextEmpNo()};
   const e = e0 ? clone(e0) : {id:uid("e"), contracts:[], notes:[]};
-  for(const n of ["name","empNo","email","phone","gender","position","dept","supervisorId","role","joinDate","birthDate","status","exitDate","exitReason","office","division","jobLevel","attId"]) e[n] = (dv(k,n,base[n]||"")||"").toString().trim();
+  for(const n of ["name","empNo","email","phone","gender","position","dept","supervisorId","role","joinDate","birthDate","status","exitDate","exitReason","office","division","jobLevel","attId","address"]) e[n] = (dv(k,n,base[n]||"")||"").toString().trim();
+  if(isHR()) e.payroll = !!dv(k,"payroll",!!base.payroll);
   e.role = roleFor(e.jobLevel, isAdmin() ? !!dv(k,"hrAdmin",base.role==="hrd") : base.role === "hrd");
   if(!e.jobLevel){ S.ui.empErr = "Choose a job level."; render(); return; }
   if(e.status !== "Resigned"){ e.exitDate = ""; e.exitReason = ""; } else if(!e.exitDate){ S.ui.empErr = "Add the last working day for a resigned employee."; render(); return; }
@@ -2435,11 +2625,12 @@ function vSettings(){
     body = `<div class="card-b stack"><h3 class="sub" style="margin:0">Who can do what</h3>
       <div class="tw" style="border:1px solid var(--line);border-radius:10px"><table class="t"><thead><tr><th>Permission</th><th>Staff</th><th>Supervisor / Manager</th><th>General Manager</th><th>HRD</th><th>Admin</th></tr></thead><tbody>
         ${matrix.map(r => `<tr><td style="white-space:normal">${r[0]}</td>${r.slice(1).map(x => `<td>${x}</td>`).join("")}</tr>`).join("")}</tbody></table></div>
-      <p class="small muted">Supervisor, Manager and General Manager come from each person's job level (Organization → Job levels). HRD and Admin access are given per person below.</p></div>
+      <p class="small muted">Supervisor, Manager and General Manager come from each person's job level (Organization → Job levels). HRD, Payroll (Finance) and Admin access are given per person below. Payroll can upload salaries and publish payslips; HRD and Admin can too.</p></div>
     <div class="card-h" style="border-top:1px solid var(--line)"><h2>System access</h2></div>
-    <div class="tw"><table class="t rt"><thead><tr><th>Person</th><th>Job level</th><th>HRD access</th><th>Admin</th></tr></thead><tbody>
+    <div class="tw"><table class="t rt"><thead><tr><th>Person</th><th>Job level</th><th>HRD access</th><th>Payroll</th><th>Admin</th></tr></thead><tbody>
       ${accts.map(e => `<tr><td class="wide">${who(e.id, e.system ? "System account" : e.position)}</td><td data-l="Job level">${esc(e.system ? "—" : jobOf(e))}</td>
         <td data-l="HRD access"><input type="checkbox" data-access="hrd" data-id="${e.id}" ${e.role==="hrd"?"checked":""} ${e.system?"disabled":""} aria-label="HRD access for ${esc(e.name)}"></td>
+        <td data-l="Payroll"><input type="checkbox" data-access="payroll" data-id="${e.id}" ${e.payroll?"checked":""} ${e.system?"disabled":""} aria-label="Payroll access for ${esc(e.name)}"></td>
         <td data-l="Admin"><input type="checkbox" data-access="admin" data-id="${e.id}" ${e.admin?"checked":""} aria-label="Admin access for ${esc(e.name)}"></td></tr>`).join("")}</tbody></table></div>
     <div class="card-h" style="border-top:1px solid var(--line)"><h2>Data</h2></div>
     <div class="card-b stack"><p class="muted">Remove the fictional sample company before going live. This deletes ${ex} sample record(s) — employees, requests, candidates, reviews, attendance, announcements and notifications marked as samples — plus anything that belongs to the removed sample employees. Settings, offices, divisions and job levels are kept. This can't be undone.</p>
@@ -2966,7 +3157,7 @@ function render(){
   else {
     if(S.mode !== "db" && !emp(S.me)) pickMe();
     if(S.view === "system" && !realAdmin()) S.view = "dashboard";
-    const views = {system:vSystem, attendance:vAttendance, announcements:vAnnouncements, dashboard:vDashboard, apply:vApply, myrequests:vMyRequests, profile:vProfile, approvals:vApprovals, calendar:vCalendar, directory:vDirectory, reviews:vReviews, recruitment:vRecruitment, reminders:vReminders, settings:vSettings};
+    const views = {system:vSystem, attendance:vAttendance, announcements:vAnnouncements, dashboard:vDashboard, apply:vApply, myrequests:vMyRequests, profile:vProfile, approvals:vApprovals, calendar:vCalendar, directory:vDirectory, reviews:vReviews, recruitment:vRecruitment, payroll:vPayroll, payslips:vMyPayslips, reminders:vReminders, settings:vSettings};
     if(["recruitment","reminders","settings","attendance"].includes(S.view) && !isMgmt()) S.view = "dashboard";
     html = (views[S.view] || vDashboard)();
   }
@@ -3093,6 +3284,16 @@ document.addEventListener("click", async ev => {
     case "att-template": S.ui.attUp = true; S.ui.attParse = null; render(); return;
     case "att-fmt": S.ui.attFmt = v; S.ui.attParse = null; render(); return;
     case "att-tpl": await attTemplate(v); return;
+    case "paytab": S.ui.paytab = v; if(v === "settings") S.ui.payImgLoaded = false; render(); return;
+    case "pay-tpl": if(isPayroll()) await payTemplate(); return;
+    case "pay-upload": if(!isPayroll()) return; S.ui.payUp = true; S.ui.payParse = null; S.ui.payMissing = null; render(); return;
+    case "pay-upclose": S.ui.payUp = false; S.ui.payParse = null; S.ui.payMissing = null; render(); return;
+    case "pay-preview": { if(!isPayroll()) return; const R = buildPay(S.ui.payParse || {}); if(R.items[0]) await payPreview(R.items[0]); return; }
+    case "pay-preview-sample": { if(!isPayroll()) return; const c = paySet(), e = activeE().find(x => !x.system); if(!e){ toast("Add an employee first."); return; }
+      const per = today().slice(0,7), [y, m] = per.split("-").map(Number);
+      await payPreview({empId:e.id, period:per, payDate:today(), no:`1/${c.prefix}/${ROMAN[m-1]}/${y}`, income:c.income.map((k, i) => [k, i === 0 ? 10000000 : i === 1 ? 500000 : 0]), deduction:c.deduction.map((k, i) => [k, i === 0 ? 200000 : i === 1 ? 100000 : 0])}); return; }
+    case "pay-publish": if(isPayroll() && !S.ui.payProgress) await payPublish(); return;
+    case "slip-dl": { const x = (S.R.payslips || []).find(y => y.id === id); if(x) await downloadSlip(x); return; }
     case "wipe-sample": if(!realAdmin()) return; if(!S.ui.wipe){ S.ui.wipe = true; render(); setTimeout(() => { if(S.ui.wipe){ S.ui.wipe = false; render(); } }, 5000); return; }
       S.ui.wipe = false; await wipeSample(); return;
     case "job-del": if(!isAdmin()) return; { const n = E().filter(e => e.jobLevel === v).length; if(n){ toast(`${n} employee(s) still have the “${v}” level. Change them first.`); return; }
@@ -3141,6 +3342,13 @@ document.addEventListener("change", async ev => {
   if(t.id === "emp-file"){ if(t.files?.[0]) readEmpFile(t.files[0]); return; }
   if(t.id === "emp-addnew"){ S.ui.empImp.addNew = t.checked; render(); return; }
   if(t.id === "att-file"){ if(t.files?.[0]) readAttFile(t.files[0]); return; }
+  if(t.id === "pay-file"){ if(t.files?.[0]){ await readPayFile(t.files[0]); payCheck(); } return; }
+  if(t.id === "pay-month" && S.ui.payParse){ if(/^\d{4}-\d{2}$/.test(t.value)){ S.ui.payParse.period = t.value; S.ui.payParse.payDate = ""; } render(); return; }
+  if(t.id === "pay-date" && S.ui.payParse){ S.ui.payParse.payDate = t.value; render(); return; }
+  if(t.id === "pay-period"){ S.ui.payPeriod = t.value; render(); return; }
+  if(t.dataset.payset){ if(isPayroll()) await savePaySet(t.dataset.payset, t.value); return; }
+  if(t.dataset.payimg){ const f = t.files?.[0]; if(!f || !isPayroll()) return; if(f.size > 2e6){ toast("Use an image under 2 MB."); return; }
+    try { const path = await window.HRM.uploadPayAsset(t.dataset.payimg, f); await savePaySetRaw(t.dataset.payimg, path); S.ui.payImgLoaded = false; toast("Uploaded."); render(); } catch(e){ toast("Upload failed: " + (e?.message || "try again")); } return; }
   if(t.id === "restore-file"){ if(t.files?.[0]) readRestoreFile(t.files[0]); return; }
   if(t.dataset.rsel){ S.ui.restore.sel[t.dataset.rsel] = t.checked; render(); return; }
   if(t.id === "att-sheet"){ S.ui.attParse.sheet = Number(t.value); if(S.ui.attParse.fmt === "other") autoMap(); render(); return; }
@@ -3149,7 +3357,8 @@ document.addEventListener("change", async ev => {
   if(t.id === "att-dmy"){ S.ui.attParse.dmy = t.value === "1"; render(); return; }
   if(t.dataset.attmap){ S.ui.attParse.map[t.dataset.attmap] = t.value === "" ? null : Number(t.value); render(); return; }
   if((t.dataset.org || t.dataset.job !== undefined || t.dataset.jobacc !== undefined || t.classList.contains("flow-add")) && !isAdmin()){ toast("Only Admin can change this setting."); render(); return; }
-  if(t.dataset.access){ if(!realAdmin()) return; const e0 = emp(t.dataset.id), e = clone(e0);
+  if(t.dataset.access){ if(!realAdmin() && !(t.dataset.access === "payroll" && isHR() && S.canEdit)) return; const e0 = emp(t.dataset.id), e = clone(e0);
+    if(t.dataset.access === "payroll"){ e.payroll = t.checked; return run(async () => { await store.put("employees", e); audit("access_changed", e.name, `payroll ${t.checked ? "granted" : "removed"}`); }, `${e.name}: payroll access ${t.checked ? "granted" : "removed"}.`); }
     if(t.dataset.access === "admin"){ if(!t.checked && S.D.employees.filter(x => x.admin).length <= 1){ toast("Keep at least one Admin."); render(); return; } e.admin = t.checked; }
     else e.role = roleFor(e.jobLevel, t.checked);
     await run(async () => { await store.put("employees", e); audit("access_changed", e.name, `${t.dataset.access} ${t.checked ? "granted" : "removed"}`); }, `${e.name}: ${t.dataset.access === "admin" ? "Admin" : "HRD"} access ${t.checked ? "granted" : "removed"}.`); return; }
@@ -3207,9 +3416,9 @@ document.addEventListener("submit", async ev => {
     const offices = dv("hol","offices",[]) || []; delete S.drafts.hol; return setCfg("holidays", (cfg().holidays||[]).filter(h => !(h.date === date && JSON.stringify(h.offices||[]) === JSON.stringify(offices))).concat([{date, name, offices}])); }
   if(s === "crit"){ const n = (dv("crit","name","")||"").trim(); if(!n) return; delete S.drafts.crit; return setCfg("criteria", (cfg().criteria||[]).concat([n])); }
 });
-document.addEventListener("dragover", ev => { const d = ev.target.closest?.("#att-drop,#emp-drop,#restore-drop"); if(d){ ev.preventDefault(); d.classList.add("over"); } });
-document.addEventListener("dragleave", ev => { ev.target.closest?.("#att-drop,#emp-drop,#restore-drop")?.classList.remove("over"); });
-document.addEventListener("drop", ev => { const d = ev.target.closest?.("#att-drop,#emp-drop,#restore-drop"); if(!d) return; ev.preventDefault(); const f = ev.dataTransfer?.files?.[0]; if(f) (d.id === "emp-drop" ? readEmpFile : d.id === "restore-drop" ? readRestoreFile : readAttFile)(f); });
+document.addEventListener("dragover", ev => { const d = ev.target.closest?.("#att-drop,#emp-drop,#restore-drop,#pay-drop"); if(d){ ev.preventDefault(); d.classList.add("over"); } });
+document.addEventListener("dragleave", ev => { ev.target.closest?.("#att-drop,#emp-drop,#restore-drop,#pay-drop")?.classList.remove("over"); });
+document.addEventListener("drop", ev => { const d = ev.target.closest?.("#att-drop,#emp-drop,#restore-drop,#pay-drop"); if(!d) return; ev.preventDefault(); const f = ev.dataTransfer?.files?.[0]; if(f) (d.id === "pay-drop" ? (x => readPayFile(x).then(payCheck)) : d.id === "emp-drop" ? readEmpFile : d.id === "restore-drop" ? readRestoreFile : readAttFile)(f); });
 document.addEventListener("keydown", ev => {
   if(ev.key === "Escape"){ if(S.modal){ S.modal = null; renderModal(); } else if(S.pop){ S.pop = null; renderTop(); } document.getElementById("app").classList.remove("open"); }
 });
@@ -3254,7 +3463,7 @@ function openDeep(){
   if(d.view === "approvals" || d.view === "myrequests"){ const r = S.D.requests.find(x => x.id === d.ref); go(d.view === "approvals" && isLead() ? "approvals" : "myrequests"); if(r){ S.modal = {kind:"req", id:r.id}; renderModal(); } return; }
   if(d.view === "profile") return go("profile", d.ref ? {id:d.ref} : {});
   if(d.view === "announcements"){ if(d.ref){ S.ui["ann-"+d.ref] = true; markAnnRead([d.ref]); } return go("announcements"); }
-  if(["reviews","reminders","directory","dashboard"].includes(d.view)) return go(d.view);
+  if(["reviews","reminders","directory","dashboard","payslips"].includes(d.view)) return go(d.view);
 }
 function logErr(msg){ if(!msg || S.errors.length > 20) return; S.errors.push(msg); if(S.errors.length <= 5) audit("client_error", String(msg).slice(0,160), APP_VERSION); }
 async function boot(){

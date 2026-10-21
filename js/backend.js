@@ -435,6 +435,33 @@
     async snapshot(id) { const { data, error } = await sb.rpc("hrm_snapshot", { sid: id }); if (error) throw mapErr(error); return data; },
     async snapshotNow() { const { data, error } = await sb.rpc("hrm_snapshot_now"); if (error) throw mapErr(error); return data; },
     async changelog(n) { const { data, error } = await sb.rpc("hrm_changelog", { lim: n || 200 }); if (error) throw mapErr(error); return data || []; },
+    async payslip(action, items) {
+      const { data, error } = await sb.functions.invoke("payslip", { body: { action, items } });
+      if (error) {
+        let detail = {}; try { detail = await error.context.json(); } catch (e) { /* no body */ }
+        const r = detail.error || error.message;
+        throw { message: r === "not_allowed" ? "only Finance (Payroll access), HRD or Admin can do this" : String(r || "server error").replace(/_/g, " ") };
+      }
+      return data;
+    },
+    async downloadPayslip(path, filename) {
+      const { data, error } = await sb.storage.from("payslips").download(path);
+      if (error) throw mapErr(error);
+      await downloads.save({ filename, data });
+    },
+    async uploadPayAsset(kind, file) {
+      if (!/^(letterhead|stamp|signature)$/.test(kind)) throw { message: "bad asset" };
+      const type = file.type === "image/jpeg" ? "image/jpeg" : "image/png";
+      const path = `_assets/${kind}-${Date.now()}.${type === "image/jpeg" ? "jpg" : "png"}`;
+      const { error } = await sb.storage.from("payslips").upload(path, file, { contentType: type, upsert: false });
+      if (error) throw mapErr(error);
+      return path;
+    },
+    async payAssetUrl(path) {
+      const { data, error } = await sb.storage.from("payslips").createSignedUrl(path, 600);
+      if (error) throw mapErr(error);
+      return data.signedUrl;
+    },
     who: () => who,
   };
 

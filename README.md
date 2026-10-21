@@ -41,6 +41,14 @@ app changes their access within a minute. A profile set to **Resigned** loses ac
 3. The person clicks **Set my password**, chooses a password and lands in the app — the account is already
    connected to their profile (verified email). Later sign-ins: work email + password, or *Forgot password?*.
 
+### Payroll & payslips
+
+- **Who runs payroll:** employees with the *Payroll access* flag (set by HRD/Admin on the employee form or in System → Access), plus HRD and Admin. They see **Finance → Payroll**.
+- **Monthly flow:** *Salary template* (pre-filled with active employees) → fill the amounts → *Upload salaries* → choose month and pay date → check the preview → *Publish*. Uploading the same month again replaces those payslips (marked *revised*, same number).
+- **The PDF** is built server-side by the `payslip` Edge Function in the company layout (letterhead, division, income, deductions, take home pay, Accounting signature + company stamp, "ASLI"). Upload the letterhead, stamp and signature once in **Payroll → Payslip layout**.
+- **Password:** every payslip PDF opens only with the employee's date of birth as `DDMMYYYY` (from the private profile). Employees without a date of birth are skipped and reported. PDF encryption (RC4) is basic; the real protection is that each file sits in a private bucket only the employee and payroll can read.
+- **Employees** download their payslips any time from **Me → My Payslips** (also a tab on their profile) and get a notification + email (no amounts in the email).
+
 ## One-time setup (Supabase dashboard)
 
 1. **Authentication → URL Configuration**
