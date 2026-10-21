@@ -1955,12 +1955,13 @@ function paySettingsBody(){
     <div class="fields">${t("company","Company name","Shown when no letterhead is uploaded and in the footer.")}${t("prefix","Payslip number format","Numbers look like 106/<b>SK-PAYSLIP/OE</b>/VII/2026 when the sheet leaves “Payslip No” empty.")}
       ${t("signerName","Signed by (name)","e.g. the Accounting lead")}${t("signerTitle","Signer title","Printed above the signature, e.g. Accounting")}</div>
     <div class="fields">${t("income","Income items","Comma-separated, in payslip order. The salary template uses these as columns.")}${t("deduction","Deduction items","Comma-separated.")}</div>
+    <div class="fields">${t("divisions","Divisions printed on the payslip","Comma-separated checkboxes, e.g. Pera ONE Villa, Education ONE, ONEderland Consulting, English Cafe, NeurONE Recruitment, ONEderland Enterprise. Leave empty to use the HRM divisions. The employee's division (or the sheet's Division column) is ticked.")}</div>
     <div class="fields">${pic("letterhead","Letterhead (full width)","Top banner with logo and company name, about 1300 × 260 px.")}${pic("stamp","Company stamp","Official stamp (cap perusahaan).")}${pic("signature","Authorised signature","Signature of the person named above.")}</div>
     <div class="row"><button class="btn" type="button" data-act="pay-preview-sample">${ic("doc")}Preview a payslip</button><span class="small muted">Uses the first employee and sample amounts — nothing is published.</span></div></div>`;
 }
 async function savePaySet(k, v){
   const cur = Object.assign({id:"settings"}, (S.R.payruns || []).find(x => x.id === "settings") || {});
-  cur[k] = (k === "income" || k === "deduction") ? String(v).split(",").map(x => x.trim()).filter(Boolean).slice(0, 12) : String(v).trim().slice(0, 120);
+  cur[k] = (k === "income" || k === "deduction" || k === "divisions") ? String(v).split(",").map(x => x.trim()).filter(Boolean).slice(0, 12) : String(v).trim().slice(0, 120);
   await run(async () => { await S.db.collection("payruns").doc("settings").set(cur); localPut("payruns", cur); audit("payslip_settings_changed", k, ""); }, "Saved.");
 }
 async function savePaySetRaw(k, v){
