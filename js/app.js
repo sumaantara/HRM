@@ -1189,7 +1189,8 @@ function gcalCard(ro){
   return `<div class="card-h" style="border-top:1px solid var(--line)"><span class="tile c3">${ic("cal")}</span><h2>Google Calendar</h2>${badge}</div>
     <div class="card-b stack"><p class="muted" style="margin:0">Every leave request that is fully approved is added to the company's shared Google Calendar as an all-day event (name, leave type, backup person — never the reason). Rejected or cancelled requests don't appear.</p>
       ${st?.ok ? `<div class="kv"><div><span>Calendar</span>${esc(st.calendar || "")}</div><div><span>Added by</span><span class="small">${esc(st.account || "")}</span></div></div>` : ""}
-      ${st && !st.ok ? `<div class="note warn">${ic("alert")}<div>${st.configured ? `Google refused the connection: ${esc(st.error || "")}. Check that the calendar is shared with the service account with “Make changes to events”.` : `Not connected yet. Admin adds the Google service account key and calendar ID as Supabase secrets — see the setup steps in the README.`}</div></div>` : ""}
+      ${st && !st.ok ? `<div class="note warn">${ic("alert")}<div>${st.configured ? `Google refused the connection: ${esc(st.error || "")}. Check that the Google Calendar API is enabled and the calendar is shared with the service account with “Make changes to events”.` : `Not connected yet. Admin adds the Google service account key and calendar ID as Supabase secrets — see the setup steps in the README.`}</div></div>` : ""}
+      ${st && !st.ok ? `<div class="row"><button class="btn" type="button" data-act="gcal-recheck">${ic("history")}Check again</button></div>` : ""}
       <label class="chk"><input type="checkbox" data-cfg="gcal.wfh" ${cfg().gcal?.wfh ? "checked" : ""} ${ro ? "disabled" : ""}><span><b>Also add approved WFH days</b><br><span class="muted small">Shown as “🏠 Name — WFH”.</span></span></label>
       ${st?.ok && !ro ? `<div class="row"><button class="btn" type="button" data-act="gcal-backfill" ${S.ui.gcalBusy ? "disabled" : ""}>${ic("history")}${S.ui.gcalBusy ? "Adding…" : "Add approved leave from the last 30 days and upcoming"}</button></div>` : ""}</div>`;
 }
@@ -3390,6 +3391,7 @@ document.addEventListener("click", async ev => {
       S.ui.mfaOff = false; try { await window.HRM.mfa.disable(); audit("mfa_disabled", nm(S.realEmpId), ""); toast("Two-step verification is off."); } catch(e){ toast(e?.message || "Couldn't turn it off."); } render(); return;
     case "mfa-reset": if(!realAdmin()) return; if(S.ui.mfaReset !== id){ S.ui.mfaReset = id; render(); setTimeout(() => { if(S.ui.mfaReset === id){ S.ui.mfaReset = null; render(); } }, 4000); return; }
       S.ui.mfaReset = null; try { await window.HRM.mfa.reset(id); audit("mfa_reset", nm(id), ""); toast(`Two-step verification reset. ${first(id)} sets it up again at the next sign-in.`); S.ui.mfaUsers = null; } catch(e){ toast("Reset failed: " + (e?.message || "server error")); } render(); return;
+    case "gcal-recheck": S.ui.gcal = undefined; render(); return;
     case "gcal-backfill": if(!isHR() || S.ui.gcalBusy) return; S.ui.gcalBusy = true; render();
       try { const r = await window.HRM.gcal("backfill"); const n = Object.values(r.synced || {}).reduce((a, b) => a + b, 0); toast(`${n} approved request(s) are on Google Calendar${r.failed ? `, ${r.failed} failed` : ""}.`); audit("gcal_backfill", `${n} synced`, r.failed ? `${r.failed} failed` : ""); }
       catch(e){ toast("Couldn't sync: " + (e?.message || "error")); } S.ui.gcalBusy = false; render(); return;
