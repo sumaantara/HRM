@@ -160,12 +160,32 @@ function resolveApprover(r, e){
   if(r === "supervisor") return emp(e.supervisorId);
   if(r.startsWith("job:")){ const holders = activeE().filter(x => x.jobLevel === r.slice(4) && x.id !== e.id);
     return holders.find(x => x.division === e.division) || holders.find(x => x.office === e.office) || holders[0]; }
+  if(r === "hrd") return hrdApprover(e);
   return byRole(r);
+}
+/* the HRD approval step goes to ONE person: the chosen HRD approver (Settings → Approval Flows), by default the head of HR
+   (the HRD who doesn't report to another HRD). The backup takes over when the approver is the one applying or has left. */
+const hrdHead = () => { const h = activeE().filter(x => x.role === "hrd"); return h.find(x => !h.some(y => y.id === x.supervisorId)) || h[0] || null; };
+function hrdApprover(e){
+  const ok = x => x && x.status !== "Resigned" && x.id !== e?.id;
+  const main = emp(cfg().hrdApprover) || hrdHead(), back = emp(cfg().hrdBackup);
+  return [main, back].find(ok) || activeE().find(x => x.role === "hrd" && ok(x)) || null;
+}
+async function reassignHrdSteps(){
+  let n = 0;
+  for(const r of S.D.requests.filter(q => q.status === "pending")){
+    const e = emp(r.empId), want = hrdApprover(e); if(!want) continue;
+    const idx = r.steps.findIndex((st, i) => st.role === "hrd" && st.status === "waiting" && i >= r.current && st.approverId !== want.id);
+    if(idx < 0 || r.steps.some((st, i) => i !== idx && st.approverId === want.id)) continue;
+    const x = clone(r); x.steps[idx].approverId = want.id; x.updatedAt = new Date().toISOString(); await store.put("requests", x); n++;
+    if(idx === r.current) await notify(want.id, `${typeName(r)} needs your approval`, `${nm(r.empId)} · ${range(r.start, r.end)} · moved to you as HRD approver`, "approvals", r.id, "request_next");
+  }
+  if(n){ audit("hrd_steps_reassigned", `${n} request(s)`, ""); toast(`${n} waiting request(s) moved to the new HRD approver.`); }
 }
 function buildSteps(e, flowKey){
   const flow = cfg().flows[flowKey] || ["supervisor","hrd"], steps = [], seen = new Set([e.id]);
   for(const r of flow){ const a = resolveApprover(r, e); if(a && !seen.has(a.id)){ seen.add(a.id); steps.push({role:r, label:apLabel(r), approverId:a.id, status:"waiting", note:"", at:null}); } }
-  if(!steps.length){ const a = [byRole("hrd"), byRole("gm")].find(x => x && x.id !== e.id); if(a) steps.push({role:a.role, label:APPROVERS[a.role], approverId:a.id, status:"waiting", note:"", at:null}); }
+  if(!steps.length){ const a = [hrdApprover(e), byRole("gm")].find(x => x && x.id !== e.id); if(a) steps.push({role:a.role, label:APPROVERS[a.role], approverId:a.id, status:"waiting", note:"", at:null}); }
   return steps;
 }
 function contractState(c){
@@ -294,7 +314,7 @@ const dv = (k, n, d) => (S.drafts[k] && n in S.drafts[k]) ? S.drafts[k][n] : d;
    rd/<uid>, ph/<uid>   per-person read receipts and self-uploaded profile photo
    audit/<uid>/m/<yyyy-mm>  each person's own monthly audit trail
    requests, notifs, counters   shared working data (Contributors write) */
-const APP_VERSION = "4.2.0", SCHEMA = 2;
+const APP_VERSION = "4.3.0", SCHEMA = 2;
 const PRIVATE_FIELDS = ["phone","gender","birthDate","address","exitReason","contract","contracts","notes","quotaLog"];
 const SUB_COLS = ["employees","private","requests","candidates","tasks","reviews","reminders","notifs","announcements","attendance","attImports","backups","dec","links","rd","ph","sub","payslips","payruns","appraisals"];
 const CORE_COLS = ["employees","requests","tasks","notifs","announcements","attendance"];
@@ -3031,7 +3051,13 @@ function vSettings(){
   let body = "";
   if(tab === "flows"){
     const rows = [["wfh","Work From Home"]].concat(Object.entries(LT()).map(([k,t]) => [k, t.name]));
-    body = `<div class="card-b"><p class="muted">Each request goes through the steps in order. A step is skipped if it would be the requester themselves or the same person as an earlier step. Changes apply to new requests; requests already in progress keep their flow.</p></div>
+    const hrds = activeE().filter(x => x.role === "hrd"), head = hrdHead(), cur = emp(cfg().hrdApprover) || head;
+    const hrdCard = `<div class="card-b stack" style="border-bottom:1px solid var(--line)"><h3 class="sub" style="margin:0">Who approves the “HRD” step</h3>
+      <p class="muted" style="margin:0">Every “HRD” step goes to one person. Leave it on automatic to use the head of HR (the HRD who doesn't report to another HRD)${head ? ` — now <b>${esc(head.name)}</b>` : ""}.</p>
+      <div class="fields"><label class="f"><span>HRD approver</span><select data-cfg="hrdApprover" ${ro ? "disabled" : ""}><option value="">Automatic — head of HR${head ? ` (${esc(head.name)})` : ""}</option>${hrds.map(x => `<option value="${x.id}" ${cfg().hrdApprover === x.id ? "selected" : ""}>${esc(x.name)} · ${esc(x.position)}</option>`).join("")}</select></label>
+        <label class="f"><span>Backup approver</span><select data-cfg="hrdBackup" ${ro ? "disabled" : ""}><option value="">None — another HRD</option>${activeE().filter(x => x.id !== cur?.id && (x.role === "hrd" || x.role === "gm" || x.admin)).map(x => `<option value="${x.id}" ${cfg().hrdBackup === x.id ? "selected" : ""}>${esc(x.name)} · ${esc(x.position)}</option>`).join("")}</select><small>Used when the HRD approver applies for leave themselves, or has left.</small></label></div>
+      ${hrds.length > 1 ? `<p class="small muted" style="margin:0">Other HRD staff (${esc(hrds.filter(x => x.id !== cur?.id).map(x => x.name).join(", "))}) keep their HRD access but don't receive approval requests.</p>` : ""}</div>`;
+    body = hrdCard + `<div class="card-b"><p class="muted">Each request goes through the steps in order. A step is skipped if it would be the requester themselves or the same person as an earlier step. Changes apply to new requests; requests already in progress keep their flow.</p></div>
     <div class="tw"><table class="t rt"><thead><tr><th>Request type</th><th>Approval steps</th></tr></thead><tbody>${rows.map(([k,l]) => { const f = cfg().flows[k] || [];
       const avail = Object.keys(APPROVERS).concat(JOBS().filter(j => j.access !== "gm" && j.access !== "staff").map(j => "job:" + j.name)).filter(a => !f.includes(a));
       return `<tr><td class="wide"><b style="font-weight:600">${esc(l)}</b><br><span class="small muted">${f.length} layer${f.length===1?"":"s"}</span></td><td class="wide"><div class="flow-row">${f.map((a,i) => `${i?`<span class="arrow">${ic("right")}</span>`:""}<span class="flow-step">${i+1}. ${esc(apLabel(a))}${ro?"":`
@@ -3125,12 +3151,12 @@ function vSettings(){
     ${ro && isHR() ? `<div class="card-b" style="padding-bottom:0"><div class="note">${ic("info")}<div>This section is managed by the Admin. You can view it but not change it.</div></div></div>` : ""}${body}</section>`;
 }
 /* Who may change which settings: Admin owns system structure; HRD owns HR policy. */
-const ADMIN_CFG = /^(company|jobLevels|offices|divisions|departments|flows|email|system|timezone|schemaVersion|signingSince)(\.|$)|^leaveTypes\.[^.]+\.(name|track|unit|paid|doc|gender|active)$/;
+const ADMIN_CFG = /^(company|jobLevels|offices|divisions|departments|flows|hrdApprover|hrdBackup|email|system|timezone|schemaVersion|signingSince)(\.|$)|^leaveTypes\.[^.]+\.(name|track|unit|paid|doc|gender|active)$/;
 const canCfg = path => isAdmin() || (isHR() && !ADMIN_CFG.test(path));
 async function setCfg(path, value){
   if(!canCfg(path)){ toast(ADMIN_CFG.test(path) ? "Only Admin can change this setting." : "Only HRD can change this setting."); render(); return; }
   const c = clone(cfg()), ks = path.split("."); let o = c; for(let i = 0; i < ks.length-1; i++){ o[ks[i]] = o[ks[i]] || {}; o = o[ks[i]]; } const old = o[ks[ks.length-1]]; o[ks[ks.length-1]] = value;
-  await run(async () => { await store.config(c); audit("setting_changed", path, `${JSON.stringify(old ?? null).slice(0,80)} → ${JSON.stringify(value).slice(0,80)}`); }, "Settings saved.");
+  await run(async () => { await store.config(c); S.config = c; audit("setting_changed", path, `${JSON.stringify(old ?? null).slice(0,80)} → ${JSON.stringify(value).slice(0,80)}`); }, "Settings saved.");
 }
 
 /* ================= modal & render ================= */
@@ -3892,7 +3918,7 @@ document.addEventListener("change", async ev => {
     return updateJobs(list, e => { if(e.jobLevel !== name || e.role === "hrd") return null; const r = roleFor(name, false); return r !== e.role ? Object.assign(clone(e), {role:r}) : null; }, `Access for ${name} updated.`); }
   if(t.dataset.wd){ const w = Number(t.dataset.wd), cur = sched().workdays || []; await setCfg("schedule.workdays", t.checked ? [...new Set(cur.concat([w]))].sort() : cur.filter(x => x !== w)); return; }
   if(t.classList.contains("flow-add") && t.value){ await setCfg("flows."+t.dataset.k, (cfg().flows[t.dataset.k]||[]).concat([t.value])); return; }
-  if(t.dataset.cfg){ const val = t.type === "checkbox" ? t.checked : t.type === "number" ? Number(t.value||0) : t.value; await setCfg(t.dataset.cfg, val); return; }
+  if(t.dataset.cfg){ const val = t.type === "checkbox" ? t.checked : t.type === "number" ? Number(t.value||0) : t.value; await setCfg(t.dataset.cfg, val); if(/^hrd(Approver|Backup)$/.test(t.dataset.cfg) && canCfg(t.dataset.cfg)) await reassignHrdSteps(); return; }
   const f = syncDraft(t); if(!f) return;
   const dk = f.dataset.draft;
   // dates: while the year is still being typed (e.g. 0202) only save the value; re-render once it's a real year or the field loses focus
