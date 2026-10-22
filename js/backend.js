@@ -529,6 +529,19 @@
       return data;
     },
     async removePayslip(path) { const { error } = await sb.storage.from("payslips").remove([path]); if (error) throw mapErr(error); },
+    async kiosk(action, extra) {
+      const { data, error } = await sb.functions.invoke("kiosk", { body: Object.assign({ action }, extra || {}) });
+      if (error) { let d = {}; try { d = await error.context.json(); } catch (e) { /* none */ } throw { code: d.error || "server_error", message: ({ not_allowed: "not allowed", no_consent: "the employee hasn't given consent", weak_pin: "PIN too easy to guess", bad_request: "invalid input" })[d.error] || String(d.error || error.message || "server error").replace(/_/g, " ") }; }
+      return data;
+    },
+    async kioskPhotos(date, empId) {
+      const { data, error } = await sb.storage.from("kiosk").list(date, { limit: 200, search: empId + "-" });
+      if (error) throw mapErr(error);
+      const files = (data || []).filter((f) => f.name.startsWith(empId + "-")).sort((a, b) => a.name.localeCompare(b.name));
+      if (!files.length) return [];
+      const { data: urls } = await sb.storage.from("kiosk").createSignedUrls(files.map((f) => `${date}/${f.name}`), 600);
+      return files.map((f, i) => { const m = f.name.match(/-(\d{2})(\d{2})(\d{2})-(\w+)\.jpg$/); return { url: urls?.[i]?.signedUrl || "", time: m ? `${m[1]}:${m[2]}` : "", how: m ? m[4] : "" }; });
+    },
     async gcal(action, extra) {
       const { data, error } = await sb.functions.invoke("gcal", { body: Object.assign({ action }, extra || {}) });
       if (error) { let d = {}; try { d = await error.context.json(); } catch (e) { /* none */ } throw { code: d.error || "server_error", message: String(d.error || error.message || "server error").replace(/_/g, " "), detail: d.detail || "" }; }

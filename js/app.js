@@ -78,7 +78,7 @@ const DEFAULT_CONFIG = {
 /* ================= state ================= */
 const S = {
   mode:"loading", db:null, mcp:undefined, D:{employees:[],requests:[],candidates:[],tasks:[],reviews:[],reminders:[],notifs:[],announcements:[],attendance:[],attImports:[],backups:[]},
-  R:{employees:[],private:[],requests:[],candidates:[],tasks:[],reviews:[],reminders:[],notifs:[],announcements:[],attendance:[],attImports:[],backups:[],dec:[],links:[],rd:[],ph:[],sub:[],payslips:[],payruns:[],appraisals:[],ingest:null,sync:null},
+  R:{employees:[],private:[],requests:[],candidates:[],tasks:[],reviews:[],reminders:[],notifs:[],announcements:[],attendance:[],attImports:[],backups:[],dec:[],links:[],rd:[],ph:[],sub:[],payslips:[],payruns:[],appraisals:[],kiosks:[],facestat:[],ingest:null,sync:null},
   pv:{}, P:{}, prof:{}, profAsk:new Set(), errors:[], mySubs:[], uid:null, who:null, user:null, canEdit:false, canWrite:null, isOwner:false, realEmpId:null, preview:null, loadedAll:false, offline:false,
   config:clone(DEFAULT_CONFIG), me:null, view:"dashboard", prm:{}, pop:null, modal:null, drafts:{}, ui:{}, loaded:{}, q:""
 };
@@ -314,9 +314,9 @@ const dv = (k, n, d) => (S.drafts[k] && n in S.drafts[k]) ? S.drafts[k][n] : d;
    rd/<uid>, ph/<uid>   per-person read receipts and self-uploaded profile photo
    audit/<uid>/m/<yyyy-mm>  each person's own monthly audit trail
    requests, notifs, counters   shared working data (Contributors write) */
-const APP_VERSION = "4.3.0", SCHEMA = 2;
+const APP_VERSION = "4.4.0", SCHEMA = 2;
 const PRIVATE_FIELDS = ["phone","gender","birthDate","address","exitReason","contract","contracts","notes","quotaLog"];
-const SUB_COLS = ["employees","private","requests","candidates","tasks","reviews","reminders","notifs","announcements","attendance","attImports","backups","dec","links","rd","ph","sub","payslips","payruns","appraisals"];
+const SUB_COLS = ["employees","private","requests","candidates","tasks","reviews","reminders","notifs","announcements","attendance","attImports","backups","dec","links","rd","ph","sub","payslips","payruns","appraisals","kiosks","facestat"];
 const CORE_COLS = ["employees","requests","tasks","notifs","announcements","attendance"];
 const BACKUP_COLS = ["employees","private","requests","candidates","tasks","reviews","reminders","notifs","announcements","attendance","attImports","backups","dec","links","rd","ph","counters","appraisals"];
 const DB_RULES = [
@@ -1344,7 +1344,7 @@ async function mfaConfirm(){
 }
 function pOverview(e){
   const priv = canSeePrivate(e.id);
-  return `${securityCard(e)}<div class="grid two"><section class="card"><div class="card-h"><h2>Employment</h2></div><div class="card-b kv">
+  return `${securityCard(e)}${faceCard(e)}<div class="grid two"><section class="card"><div class="card-h"><h2>Employment</h2></div><div class="card-b kv">
     <div><span>Employee ID</span>${esc(e.empNo)}</div><div><span>Position</span>${esc(e.position)}</div><div><span>Department</span>${esc(e.dept)}</div>
     <div><span>Direct supervisor</span>${e.supervisorId?`<button class="btn link" type="button" data-act="open-emp" data-id="${e.supervisorId}">${esc(nm(e.supervisorId))}</button>`:"—"}</div>
     <div><span>Join date</span>${fmt(e.joinDate)}</div><div><span>Length of service</span>${tenure(e.joinDate)}</div>
@@ -1883,7 +1883,7 @@ function computeAtt(e, ym, otMinDay){
     else if(doc){ status = "absent"; r.absent++; }
     else continue;
     if(wd) r.expected++;
-    r.days.push({date:s, in:rec?.in||"", out:rec?.out||"", work: rec ? work : null, brk: rec ? (Number(rec.brk) || 0) : null, n:rec?.n || 0, miss: !!(rec && !rec.wfh && (rec.miss || !rec.in || !rec.out)), note:rec?.note || "", status, type:lv ? typeName(lv) : ""});
+    r.days.push({date:s, kiosk:!!(rec?.kp?.length), kh:rec?.kh || null, src:rec?.src || "", in:rec?.in||"", out:rec?.out||"", work: rec ? work : null, brk: rec ? (Number(rec.brk) || 0) : null, n:rec?.n || 0, miss: !!(rec && !rec.wfh && (rec.miss || !rec.in || !rec.out)), note:rec?.note || "", status, type:lv ? typeName(lv) : ""});
   }
   const base = r.expected - r.leave;
   r.rate = base > 0 ? (r.present + r.wfh) / base * 100 : null;
@@ -2145,7 +2145,7 @@ function buildStructured(P){
       if(!m.empId){ unmatched.set(key, (unmatched.get(key) || 0) + list.length); continue; }
       const pk = m.empId + "|" + date; (per.get(pk) || per.set(pk, []).get(pk)).push(...list);
     }
-    for(const [pk, list] of per){ const [empId, date] = pk.split("|"); const d = dayCalc(list); if(d) out.set(pk, Object.assign({empId, date, src:P.fmt.toUpperCase()}, d)); }
+    for(const [pk, list] of per){ const [empId, date] = pk.split("|"); const d = dayCalc(list); if(d) out.set(pk, Object.assign({empId, date, src:P.fmt.toUpperCase(), mp:[...new Set(list)].sort((a,b) => a-b)}, d)); }
   } else {
     for(const r of data){
       total++; const idv = col.id != null ? r[col.id] : "", namev = col.name != null ? r[col.name] : "";
@@ -2257,7 +2257,13 @@ async function importAtt(){
   const links = isMachine(P.fmt) ? res.machine.filter(m => m.empId && attKey(m.name) && !attNames(emp(m.empId)?.attName).includes(attKey(m.name))) : [];
   const ok = await run(async () => {
     for(const [k, list] of groups){ const [empId, month] = k.split("_"); const cur = attDoc(empId, month); const doc = cur ? clone(cur) : {id:k, empId, month, days:{}};
-      for(const r of list){ const d = {in:r.in || "", out:r.out || ""}; for(const f of ["work","brk","n","miss","src","wfh","note"]) if(r[f] !== undefined && r[f] !== "" && r[f] !== false) d[f] = r[f]; doc.days[r.date] = d; }
+      for(const r of list){ let d = {in:r.in || "", out:r.out || ""}; for(const f of ["work","brk","n","miss","src","wfh","note","mp"]) if(r[f] !== undefined && r[f] !== "" && r[f] !== false) d[f] = r[f];
+        const old = doc.days[r.date];
+        if(old?.kp?.length){   // tablet scans on the same day: merge them with the machine's scans (or keep them next to a sheet entry)
+          if(d.mp){ const m = dayCalc(d.mp.concat(old.kp)); if(m) d = Object.assign(d, m, {src:`${d.src}+KIOSK`}); }
+          d.kp = old.kp; if(old.kh) d.kh = old.kh;
+        }
+        doc.days[r.date] = d; }
       doc.updatedAt = now; doc.importId = log.id; await store.put("attendance", doc); }
     for(const m of links){ const e = emp(m.empId); if(e) await putEmployee(Object.assign(clone(e), {attName:[e.attName, m.name.trim()].filter(Boolean).join(", ")})); }
     await store.put("attImports", log); audit("attendance_imported", P.file, `${ATT_FMT[P.fmt]?.label || P.fmt}${P.office ? " · " + P.office : ""} · ${res.recs.length} records, ${res.from}..${res.to}`);
@@ -2283,9 +2289,159 @@ function pAttendance(e){
   <div class="grid kpis">${kpi("Attendance rate", r.rate == null ? "—" : r.rate.toFixed(0)+"%", `${r.present + r.wfh} of ${r.expected - r.leave} workdays`)}${kpi("Average check-in", r.avgIn, `start ${esc(sc.start)}`)}
     ${kpi("Late", r.late, `${r.lateMin} min total`, r.late ? "warn" : "")}${kpi("Absent", r.absent, "unexcused", r.absent ? "warn" : "")}${kpi("Leave · WFH", `${r.leave} · ${r.wfh}`, "approved")}${kpi("Hours worked", (r.mins/60).toFixed(1), r.workDays ? `avg ${dur(r.avgWork)} per day` : "breaks excluded")}${kpi("Break time", dur(r.brk), r.workDays ? `avg ${dur(r.avgBrk)} per day` : "")}</div>
   <section class="card"><div class="card-h"><h2>Daily log</h2></div><div class="tw"><table class="t rt"><thead><tr><th>Date</th><th>Check in</th><th>Check out</th><th class="r">Break</th><th class="r">Worked</th><th>Status</th></tr></thead><tbody>
-    ${r.days.map(d => `<tr><td class="wide"><b style="font-weight:600">${DOWL[parse(d.date).getDay()].slice(0,3)}, ${fmt(d.date)}</b>${d.note ? `<br><span class="small muted">${esc(d.note)}</span>` : ""}</td><td data-l="In" class="num">${esc(d.in||"—")}</td><td data-l="Out" class="num">${d.out ? esc(d.out) : d.in ? `<span class="down">missing</span>` : "—"}</td>
+    ${r.days.map(d => `<tr><td class="wide"><b style="font-weight:600">${DOWL[parse(d.date).getDay()].slice(0,3)}, ${fmt(d.date)}</b>${d.kiosk ? ` <span class="tag" title="${esc((d.kh || []).map(x => `${x.t} ${x.how}`).join(", "))}">Tablet</span>${isMgmt() && S.mode === "db" ? ` <button class="btn link small" type="button" data-act="kphotos" data-v="${esc(e.id)}|${d.date}" title="Proof photos">📷</button>` : ""}` : ""}${d.note ? `<br><span class="small muted">${esc(d.note)}</span>` : ""}</td><td data-l="In" class="num">${esc(d.in||"—")}</td><td data-l="Out" class="num">${d.out ? esc(d.out) : d.in ? `<span class="down">missing</span>` : "—"}</td>
       <td data-l="Break" class="r num">${d.brk ? dur(d.brk) : d.work != null ? "—" : ""}</td><td data-l="Worked" class="r num">${d.work ? dur(d.work) : "—"}${d.miss && d.n ? ` <span class="small down" title="Odd number of scans (${d.n}) — a scan is missing">!</span>` : ""}</td>
       <td data-l="Status">${attPill(d.status)}${d.type && d.status === "leave" ? ` <span class="small muted">${esc(d.type)}</span>` : ""}</td></tr>`).join("")}</tbody></table></div></section>`}`;
+}
+
+/* ---------- attendance tablets: face recognition + PIN (kiosk.html, edge function "kiosk") ----------
+   HRD registers a tablet per office (pairing code), each employee agrees to face attendance (UU PDP consent), HRD enrolls the
+   face (5 samples → descriptors, no photos kept), employees set their own PIN as fallback. Proof photos are kept 7 or 30 days. */
+const KTZ = [["Asia/Jakarta","WIB (Jakarta, Surabaya)"],["Asia/Makassar","WITA (Bali, Gili, Lombok)"],["Asia/Jayapura","WIT"]];
+const tzFor = office => /jakarta|surabaya|bandung|semarang|yogya|java|jawa/i.test(office || "") ? "Asia/Jakarta" : "Asia/Makassar";
+const tzLabel = tz => (KTZ.find(t => t[0] === tz) || ["", tz])[1].split(" ")[0];
+const kcfg = () => Object.assign({retentionDays:30, threshold:0.5}, cfg().kiosk || {});
+const fstat = id => (S.R.facestat || []).find(x => x.empId === id) || {empId:id};
+const kioskUrl = () => (window.HRM_CONFIG?.siteUrl || location.origin + location.pathname.replace(/[^/]*$/, "")) + "kiosk.html";
+async function kioskCall(action, body){
+  if(!window.HRM?.kiosk) throw new Error("Attendance tablets work on the live site.");
+  return window.HRM.kiosk(action, body);
+}
+function kioskSettings(ro){
+  const k = kcfg(), list = (S.R.kiosks || []).filter(x => !x.revoked).sort((a,b) => (a.office||"").localeCompare(b.office||""));
+  const seen = x => !x.lastSeen ? "never" : diffDays(x.lastSeen.slice(0,10), today()) === 0 ? "today " + new Date(x.lastSeen).toTimeString().slice(0,5) : fmt(x.lastSeen.slice(0,10));
+  const enrolled = (S.R.facestat || []).filter(x => x.enrolledAt).length, act = activeE().length;
+  return `<div class="card-h" style="border-top:1px solid var(--line)"><span class="tile c1">${ic("fp")}</span><h2>Attendance tablets (face & PIN)</h2>${ro ? "" : `<button class="btn sm pri" type="button" data-act="kiosk-new" style="margin-left:auto">${ic("plus")}Add tablet</button>`}</div>
+  <div class="card-b stack"><p class="muted" style="margin:0">A tablet at the office entrance records attendance by face (with a blink check), or by Employee ID + PIN. Scans go straight into the Attendance Report and payroll recap — together with fingerprint uploads. Open <b>${esc(kioskUrl())}</b> on the tablet and enter the pairing code.</p>
+    <div class="grid kpis k4">${kpi("Tablets", list.length, list.filter(x => x.tokenHash).length + " paired")}${kpi("Faces enrolled", enrolled, `of ${act} active employees`)}${kpi("Consent given", (S.R.facestat || []).filter(x => x.consentAt).length, "required before enrolment")}${kpi("PINs set", (S.R.facestat || []).filter(x => x.pinSet).length, "fallback")}</div>
+    <div class="fields"><label class="f"><span>Keep proof photos for</span><select data-cfg="kiosk.retentionDays" ${ro?"disabled":""}>${[7,30].map(d => `<option value="${d}" ${Number(k.retentionDays)===d?"selected":""}>${d} days</option>`).join("")}</select><small>A small photo (±15 KB) is taken at every scan for checking misuse, then deleted automatically.</small></label>
+      <label class="f"><span>Face matching</span><select data-cfg="kiosk.threshold" ${ro?"disabled":""}>${[[0.45,"Strict — fewer mix-ups, more “not recognised”"],[0.5,"Normal (recommended)"],[0.55,"Relaxed — for poor lighting"]].map(([v,l]) => `<option value="${v}" ${Number(k.threshold)===v?"selected":""}>${l}</option>`).join("")}</select></label></div>
+    ${list.length ? `<div class="tw" style="border:1px solid var(--line);border-radius:10px"><table class="t rt"><thead><tr><th>Tablet</th><th>Office</th><th>Status</th><th>Last seen</th><th></th></tr></thead><tbody>${list.map(x => `<tr><td class="wide"><b style="font-weight:600">${esc(x.name || "Tablet")}</b></td><td data-l="Office">${esc(x.office)} <span class="tag">${tzLabel(x.tz)}</span></td>
+      <td data-l="Status">${x.tokenHash ? `<span class="pill p-approved">Paired</span>` : x.pairExp && x.pairExp > new Date().toISOString() ? `<span class="pill p-pending">Waiting for code</span>` : `<span class="pill p-neutral">Not paired</span>`}</td><td data-l="Last seen" class="small muted">${seen(x)}</td>
+      <td class="r nw">${ro ? "" : `<button class="btn sm" type="button" data-act="kiosk-code" data-id="${esc(x.id)}">New code</button> <button class="btn sm" type="button" data-act="kiosk-revoke" data-id="${esc(x.id)}">${S.ui.kRevoke === x.id ? "Tap again" : "Remove"}</button>`}</td></tr>`).join("")}</tbody></table></div>` : `<div class="empty"><b>No tablets yet</b>Add one per office entrance.</div>`}
+  </div>`;
+}
+function mKiosk(){
+  const k = "kiosk-new", code = S.ui.kCode;
+  if(code) return `<div class="md-h"><span class="tile c1">${ic("fp")}</span><h2>Pair the tablet</h2><button class="ib plain" type="button" data-act="close" aria-label="Close">${ic("x")}</button></div>
+    <div class="md-b stack" style="text-align:center"><p>On the tablet, open</p><p><b style="font-size:1.1rem">${esc(kioskUrl())}</b></p><p>and enter this code (valid 15 minutes):</p>
+      <div style="font-size:3rem;font-weight:700;letter-spacing:.25em;font-family:var(--f-head)">${esc(code)}</div>
+      <p class="small muted">Allow the camera when the browser asks. Tip: add the page to the home screen and keep the tablet charging.</p></div>
+    <div class="md-f"><button class="btn pri" type="button" data-act="close">Done</button></div>`;
+  const office = dv(k, "office", (cfg().offices || [])[0] || ""), tz = dv(k, "tz", tzFor(office));
+  return `<form data-draft="${k}" data-submit="kiosk" novalidate><div class="md-h"><span class="tile c1">${ic("fp")}</span><h2>Add attendance tablet</h2><button class="ib plain" type="button" data-act="close" aria-label="Close">${ic("x")}</button></div>
+    <div class="md-b"><div class="fields"><label class="f full"><span>Name</span><input type="text" name="name" value="${esc(dv(k, "name", ""))}" placeholder="e.g. Denpasar — front door"></label>
+      <label class="f"><span>Office</span><select name="office" data-rerender="1">${(cfg().offices || []).map(o => `<option ${office===o?"selected":""}>${esc(o)}</option>`).join("")}</select></label>
+      <label class="f"><span>Time zone</span><select name="tz">${KTZ.map(([v,l]) => `<option value="${v}" ${tz===v?"selected":""}>${esc(l)}</option>`).join("")}</select><small>Scan times are recorded in this time zone.</small></label></div>
+      ${S.ui.kErr ? `<ul class="errs"><li>${esc(S.ui.kErr)}</li></ul>` : ""}</div>
+    <div class="md-f"><button class="btn" type="button" data-act="close">Cancel</button><button class="btn pri" type="submit">Create pairing code</button></div></form>`;
+}
+async function saveKiosk(){
+  const k = "kiosk-new", office = dv(k, "office", (cfg().offices || [])[0] || ""), body = {name:(dv(k, "name", "") || "").trim() || office + " tablet", office, tz:dv(k, "tz", tzFor(office))};
+  try { const r = await kioskCall("create", body); S.ui.kCode = r.code; S.ui.kErr = ""; delete S.drafts[k]; audit("kiosk_added", body.name, body.office); renderModal(); }
+  catch(e){ S.ui.kErr = e?.message || "Couldn't create the tablet."; renderModal(); }
+}
+/* profile card */
+function faceCard(e){
+  if(e.system || !window.HRM?.kiosk || S.mode !== "db") return "";
+  const self = e.id === S.realEmpId, hr = isHR(); if(!self && !hr) return "";
+  const s = fstat(e.id), c = !!s.consentAt;
+  return `<section class="card"><div class="card-h"><span class="tile c1">${ic("fp")}</span><h2>Face & PIN attendance</h2>${s.enrolledAt ? `<span class="pill p-approved">Face enrolled</span>` : c ? `<span class="pill p-pending">Consent given · not enrolled</span>` : `<span class="pill p-neutral">No consent</span>`}</div>
+    <div class="card-b stack"><div class="kv"><div><span>Consent</span>${c ? `Given ${fmt(s.consentAt.slice(0,10))}${String(s.consentBy||"").startsWith("hr:") ? " · written, recorded by HR" : ""}` : s.withdrawnAt ? `Withdrawn ${fmt(s.withdrawnAt.slice(0,10))}` : "Not given"}</div>
+      <div><span>Face</span>${s.enrolledAt ? `${s.samples || 0} samples · ${fmt(s.enrolledAt.slice(0,10))}` : "Not enrolled"}</div><div><span>PIN</span>${s.pinSet ? `Set ${s.pinAt ? fmt(s.pinAt.slice(0,10)) : ""}` : "Not set"}</div></div>
+      <p class="small muted" style="margin:0">${self ? "Sign in at the office tablet with your face, or with your Employee ID + PIN. Only numbers describing your face are stored (no photo) and they're deleted when you withdraw consent or leave." : "Face data is stored as numbers only and deleted when consent is withdrawn or the employee leaves."}</p>
+      <div class="row">${self ? (c ? `<button class="btn" type="button" data-act="face-withdraw">${S.ui.fWithdraw ? "Tap again to withdraw & delete" : "Withdraw consent"}</button>` : `<button class="btn pri" type="button" data-act="face-consent">${ic("check")}I agree to face attendance</button>`)
+        + `<button class="btn" type="button" data-act="pin-set">${ic("shield")}${s.pinSet ? "Change PIN" : "Set PIN"}</button>` : ""}
+        ${hr && !self ? (c ? `<button class="btn ${s.enrolledAt ? "" : "pri"}" type="button" data-act="face-enroll" data-id="${e.id}">${ic("user")}${s.enrolledAt ? "Re-enroll face" : "Enroll face"}</button>` : `<button class="btn" type="button" data-act="face-hrconsent" data-id="${e.id}">${S.ui.fHrc === e.id ? "Tap again to confirm" : "Record written consent"}</button>`) : ""}
+        ${hr && self && c ? `<button class="btn" type="button" data-act="face-enroll" data-id="${e.id}">${ic("user")}${s.enrolledAt ? "Re-enroll face" : "Enroll face"}</button>` : ""}
+        ${hr && s.enrolledAt ? `<button class="btn" type="button" data-act="face-forget" data-id="${e.id}">${S.ui.fForget === e.id ? "Tap again to delete" : "Delete face data"}</button>` : ""}
+        ${hr && s.pinSet && !self ? `<button class="btn" type="button" data-act="pin-reset" data-id="${e.id}">${S.ui.pReset === e.id ? "Tap again" : "Reset PIN"}</button>` : ""}</div></div></section>`;
+}
+const CONSENT_TEXT = `I agree that ONEderland uses my face to record my attendance at the office tablet. I understand that:
+• only a numeric description of my face (not a photo) is stored, used only for attendance;
+• a small photo is taken at each scan to check misuse and deleted automatically after the retention period;
+• I can use my Employee ID + PIN instead, and I can withdraw this consent at any time — my face data is then deleted;
+• my face data is deleted when I leave the company.`;
+function mConsent(){
+  return `<form data-draft="consent" data-submit="consent" novalidate><div class="md-h"><span class="tile c1">${ic("fp")}</span><h2>Consent for face attendance</h2><button class="ib plain" type="button" data-act="close" aria-label="Close">${ic("x")}</button></div>
+    <div class="md-b stack"><div class="note">${ic("shield")}<div style="white-space:pre-line">${esc(CONSENT_TEXT)}</div></div>
+      <label class="chk"><input type="checkbox" name="agree" ${dv("consent","agree",false) ? "checked" : ""}><span><b>I have read this and I agree</b> (UU PDP No. 27/2022)</span></label>
+      ${S.ui.cErr ? `<ul class="errs"><li>${esc(S.ui.cErr)}</li></ul>` : ""}</div>
+    <div class="md-f"><button class="btn" type="button" data-act="close">Cancel</button><button class="btn pri" type="submit">Agree</button></div></form>`;
+}
+function mPin(){
+  return `<form data-draft="pinset" data-submit="pinset" novalidate><div class="md-h"><span class="tile c1">${ic("shield")}</span><h2>Attendance PIN</h2><button class="ib plain" type="button" data-act="close" aria-label="Close">${ic("x")}</button></div>
+    <div class="md-b stack"><p class="muted" style="margin:0">Used at the office tablet with your Employee ID when your face isn't recognised. 6 digits — not 000000, 123456 or your birth date.</p>
+      <div class="fields"><label class="f"><span>New PIN</span><input type="password" name="pin" inputmode="numeric" maxlength="6" autocomplete="new-password" value="${esc(dv("pinset","pin",""))}"></label>
+      <label class="f"><span>Repeat PIN</span><input type="password" name="pin2" inputmode="numeric" maxlength="6" autocomplete="new-password" value="${esc(dv("pinset","pin2",""))}"></label></div>
+      ${S.ui.pErr ? `<ul class="errs"><li>${esc(S.ui.pErr)}</li></ul>` : ""}</div>
+    <div class="md-f"><button class="btn" type="button" data-act="close">Cancel</button><button class="btn pri" type="submit">Save PIN</button></div></form>`;
+}
+async function savePin(){
+  const p = String(dv("pinset","pin","") || ""), p2 = String(dv("pinset","pin2","") || ""), bd = (me()?.birthDate || "").replace(/-/g, "");
+  const err = !/^\d{6}$/.test(p) ? "Use exactly 6 digits." : p !== p2 ? "The two PINs don't match." : (bd && (p === bd.slice(2) || p === bd.slice(6,8) + bd.slice(4,6) + bd.slice(2,4))) ? "Don't use your birth date." : null;
+  if(err){ S.ui.pErr = err; renderModal(); return; }
+  try { await kioskCall("setpin", {pin:p}); S.ui.pErr = ""; delete S.drafts.pinset; S.modal = null; renderModal(); toast("PIN saved. Use it with your Employee ID at the office tablet."); }
+  catch(e){ S.ui.pErr = e?.code === "weak_pin" ? "That PIN is too easy to guess — choose another." : (e?.message || "Couldn't save."); renderModal(); }
+}
+async function saveConsent(){
+  if(!dv("consent","agree",false)){ S.ui.cErr = "Tick the box to agree."; renderModal(); return; }
+  try { await kioskCall("consent", {on:true}); S.ui.cErr = ""; delete S.drafts.consent; S.modal = null; renderModal(); audit("face_consent", nm(S.realEmpId), "given"); toast("Thank you. HR will enroll your face at the office."); }
+  catch(e){ S.ui.cErr = e?.message || "Couldn't save."; renderModal(); }
+}
+/* enrollment: camera in the HRM (HR's laptop or the tablet), 5 samples with small head movements */
+let fapiP = null;
+function loadFaceApi(){
+  if(window.faceapi?.nets) return Promise.resolve(window.faceapi);
+  return fapiP = fapiP || new Promise((res, rej) => { const s = document.createElement("script"); s.src = "vendor/face-api/face-api.js"; s.onload = () => res(window.faceapi); s.onerror = () => rej(new Error("Face library failed to load")); document.head.appendChild(s); })
+    .then(async F => { const gl = (() => { try { const c = document.createElement("canvas"); return !!(c.getContext("webgl2") || c.getContext("webgl")); } catch(e){ return false; } })();
+      try { if(!gl || !(await F.tf.setBackend("webgl"))) await F.tf.setBackend("cpu"); } catch(e){ await F.tf.setBackend("cpu"); } await F.tf.ready(); const b = "vendor/face-api/model"; await Promise.all([F.nets.tinyFaceDetector.loadFromUri(b), F.nets.faceLandmark68Net.loadFromUri(b), F.nets.faceRecognitionNet.loadFromUri(b)]); return F; });
+}
+const ENROLL_STEPS = ["Look straight at the camera","Turn your head slightly left","Turn your head slightly right","Lift your chin a little","Look straight again"];
+function mEnroll(){
+  const e = emp(S.modal.id);
+  return `<div class="md-h">${av(e?.id)}<h2>Enroll face — ${esc(e?.name || "")}</h2><button class="ib plain" type="button" data-act="close" aria-label="Close">${ic("x")}</button></div>
+    <div class="md-b stack" style="align-items:center"><div class="enr-stage"><video id="enr-video" playsinline muted autoplay></video><div class="enr-ring" id="enr-ring"></div></div>
+      <div id="enr-msg" style="text-align:center"><b>Starting the camera…</b></div><div class="enr-dots" id="enr-dots">${ENROLL_STEPS.map(() => "<i></i>").join("")}</div>
+      <p class="small muted" style="margin:0;text-align:center">Good light on the face, no sunglasses or mask. Only numbers describing the face are saved — no photos.</p></div>
+    <div class="md-f"><button class="btn" type="button" data-act="close">Cancel</button><button class="btn pri" type="button" id="enr-save" data-act="enroll-save" disabled>Save face</button></div>`;
+}
+let enr = null;
+async function startEnroll(){
+  const msg = t => { const m = document.getElementById("enr-msg"); if(m) m.innerHTML = t; };
+  try {
+    const F = await loadFaceApi(), stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:"user", width:{ideal:640}, height:{ideal:480}}, audio:false});
+    const v = document.getElementById("enr-video"); if(!v){ stream.getTracks().forEach(t => t.stop()); return; }
+    enr = {stream, samples:[], last:0, empId:S.modal.id}; v.srcObject = stream; await v.play().catch(() => {});
+    const opts = new F.TinyFaceDetectorOptions({inputSize:320, scoreThreshold:0.6});
+    while(enr && enr.samples.length < ENROLL_STEPS.length && document.getElementById("enr-video") === v){
+      msg(`<b>${ENROLL_STEPS[enr.samples.length]}</b><br><span class="small muted">Sample ${enr.samples.length + 1} of ${ENROLL_STEPS.length}</span>`);
+      await new Promise(r => setTimeout(r, 150));
+      if(Date.now() - enr.last < 900 || !v.videoWidth) continue;
+      let d = null; try { d = await F.detectSingleFace(v, opts).withFaceLandmarks().withFaceDescriptor(); } catch(err){ continue; }
+      const ring = document.getElementById("enr-ring");
+      if(!d || d.detection.box.width < v.videoWidth * 0.25){ if(ring) ring.className = "enr-ring"; continue; }
+      if(ring) ring.className = "enr-ring ok";
+      enr.samples.push(Array.from(d.descriptor).map(x => Math.round(x * 1e5) / 1e5)); enr.last = Date.now();
+      document.querySelectorAll("#enr-dots i").forEach((el, i) => el.classList.toggle("f", i < enr.samples.length));
+    }
+    if(enr && enr.samples.length >= ENROLL_STEPS.length){ msg(`<b>All samples captured ✓</b><br><span class="small muted">Press Save face.</span>`); const b = document.getElementById("enr-save"); if(b) b.disabled = false; }
+  } catch(e){ msg(`<b style="color:var(--bad)">${esc(e?.name === "NotAllowedError" ? "Camera permission was denied." : e?.message || "Camera unavailable.")}</b>`); }
+}
+function stopEnroll(){ if(enr?.stream) enr.stream.getTracks().forEach(t => t.stop()); enr = null; }
+async function saveEnroll(){
+  if(!enr || enr.samples.length < 3) return;
+  const id = enr.empId, list = enr.samples.slice();
+  try { await kioskCall("enroll", {empId:id, descriptors:list}); stopEnroll(); S.modal = null; renderModal(); audit("face_enrolled", nm(id), `${list.length} samples`); toast(`${first(id)}'s face is enrolled. They can now sign in at the tablet.`); }
+  catch(e){ toast("Couldn't save: " + (e?.code === "no_consent" ? "consent is missing." : e?.message || "error")); }
+}
+/* proof photos for one day (HRD / GM / Admin) */
+function mPhotos(){
+  const {empId, date} = S.modal, ph = S.ui.kPhotos;
+  return `<div class="md-h">${av(empId)}<h2>Tablet photos — ${esc(nm(empId))}<br><span class="small muted" style="font-family:var(--f-body);font-weight:500">${fmt(date)}</span></h2><button class="ib plain" type="button" data-act="close" aria-label="Close">${ic("x")}</button></div>
+    <div class="md-b">${!ph ? `<div class="empty"><b>Loading…</b></div>` : ph.error ? `<ul class="errs"><li>${esc(ph.error)}</li></ul>` : !ph.length ? `<div class="empty"><b>No photos</b>Photos are deleted after ${kcfg().retentionDays} days.</div>`
+      : `<div class="kph">${ph.map(p => `<figure><img src="${esc(p.url)}" alt="Scan ${esc(p.time)}"><figcaption>${esc(p.time)} · ${esc(p.how)}</figcaption></figure>`).join("")}</div>`}</div>
+    <div class="md-f"><button class="btn" type="button" data-act="close">Close</button></div>`;
 }
 
 /* ---------- payroll & payslips ----------
@@ -2916,6 +3072,7 @@ async function deleteEmp(){
   S.ui.delBusy = true; S.ui.delErr = "";
   const ok = await run(async () => {
     if(e.userId && S.mode === "db") await window.HRM.deleteAccount(id);
+    if(S.mode === "db" && window.HRM?.kiosk){ try { await window.HRM.kiosk("forget", {empId:id, pin:true, all:true}); } catch(err){} }
     for(const [c, f] of Object.entries(own)) for(const x of (R[c] || []).filter(f)){
       if(c === "payslips" && x.file && window.HRM?.removePayslip) { try { await window.HRM.removePayslip(x.file); } catch(err){} }
       await store.del(c, x.id);
@@ -2953,6 +3110,7 @@ async function saveEmp(){
     e.notes = [{id:uid("n"), date:today(), kind:"Contract", by:S.me, text:`${fromCand ? `Hired through recruitment (${fromCand.source}).` : "Employee record created."} ${ctype} contract ${c.start ? "from "+fmt(c.start) : ""}${c.end ? " to "+fmt(c.end) : ""}.`}];
   }
   S.ui.empErr = ""; S.modal = null; delete S.drafts[k];
+  if(e0 && e0.status !== "Resigned" && e.status === "Resigned" && S.mode === "db" && window.HRM?.kiosk) window.HRM.kiosk("forget", {empId:e.id, pin:true}).catch(() => {});   // leavers: face data & PIN deleted (UU PDP)
   const changed = e0 ? Object.keys(e).filter(x => JSON.stringify(e[x]) !== JSON.stringify(e0[x]) && !["rev","updatedAt","updatedBy"].includes(x)) : [];
   await run(async () => {
     await store.put("employees", e);
@@ -3127,6 +3285,7 @@ function vSettings(){
         <label class="f"><span>Work ends</span><input type="time" data-cfg="schedule.end" value="${esc(sc.end)}" ${ro?"disabled":""}></label>
         <label class="f"><span>Grace period (minutes)</span><input type="number" min="0" max="120" data-cfg="schedule.grace" value="${Number(sc.grace)||0}" ${ro?"disabled":""}><small>Check-ins within this many minutes after start aren't counted as late.</small></label></div>
       <fieldset style="border:0;padding:0;margin:0"><legend style="font-size:.8rem;font-weight:600;color:var(--ink2);margin-bottom:8px">Working days</legend><div class="row">${[1,2,3,4,5,6,0].map(w => `<label class="chk"><input type="checkbox" data-wd="${w}" ${(sc.workdays||[]).includes(w)?"checked":""} ${ro?"disabled":""}><span>${DOWL[w]}</span></label>`).join("")}</div></fieldset></div>`;
+    body += kioskSettings(ro);
   } else if(tab === "notif"){
     const groups = [...new Set(Object.values(NOTIFY).map(d => d[5]))], noMail = activeE().filter(e => !e.system && (!e.email || /@example\.com$/i.test(e.email)));
     body = `<div class="card-b stack"><p class="muted">Every event below always appears in the person's notification bell. Tick <b>Email</b> to also send it to their work email — sent by the HRM's mail server, only to employees in the directory, with a button that opens the right page.</p>
@@ -3189,9 +3348,10 @@ const confirmCloseHtml = () => `<div class="mconf" role="alertdialog" aria-label
   <div class="row end"><button class="btn" type="button" data-act="mc-keep">Keep editing</button><button class="btn bad" type="button" data-act="mc-discard">Discard & close</button></div></div></div>`;
 function renderModal(){
   const el = document.getElementById("modal");
-  if(S.modal !== S._lastModal){ S._lastModal = S.modal; S.modalDirty = false; S.ui.confirmClose = false; }
+  if(S.modal !== S._lastModal){ if(S._lastModal?.kind === "enroll") stopEnroll(); S._lastModal = S.modal; S.modalDirty = false; S.ui.confirmClose = false; }
+  if(S.modal?.kind === "enroll" && el.dataset.k === "enroll:" + S.modal.id && el.querySelector("#enr-video")) return;   // keep the live camera
   if(!S.modal){ el.innerHTML = ""; return; }
-  const inner = {req:() => mReq(S.modal.id), task:mTask, review:mReview, cand:mCand, emp:mEmp, contract:mContract, rem:mRem, quota:mQuota, ann:mAnn, mfa:mMfa, appr:mAppr, empdel:mEmpDel}[S.modal.kind]?.() || "";
+  const inner = {req:() => mReq(S.modal.id), task:mTask, review:mReview, cand:mCand, emp:mEmp, contract:mContract, rem:mRem, quota:mQuota, ann:mAnn, mfa:mMfa, appr:mAppr, empdel:mEmpDel, kiosk:mKiosk, consent:mConsent, pinset:mPin, enroll:mEnroll, kphotos:mPhotos}[S.modal.kind]?.() || "";
   // keep the scroll position and the focused field when the open form re-renders (no jumping back to the top)
   const same = el.dataset.k === S.modal.kind + ":" + (S.modal.id || ""), mb0 = el.querySelector(".mb"), sc = mb0 ? mb0.scrollTop : 0, wsc = window.scrollY;
   const a = document.activeElement, inM = a && el.contains(a), fn = inM && a.name, fv = inM && a.type === "radio" ? a.value : null, fid = inM && a.id;
@@ -3199,6 +3359,7 @@ function renderModal(){
   el.innerHTML = `<div class="mb" data-act="backdrop"><div class="md ${S.modal.kind==="review"||S.modal.kind==="emp"||S.modal.kind==="appr"?"wide":""}" role="dialog" aria-modal="true">${inner}</div>${S.ui.confirmClose ? confirmCloseHtml() : ""}</div>`;
   el.dataset.k = S.modal.kind + ":" + (S.modal.id || "");
   decorate(el);
+  if(S.modal.kind === "enroll" && !same) setTimeout(startEnroll, 50);
   if(same){ const mb = el.querySelector(".mb"); if(mb) mb.scrollTop = sc; if(window.scrollY !== wsc) window.scrollTo(0, wsc);
     const t = fid ? document.getElementById(fid) : fn ? el.querySelector(`[name="${CSS.escape(fn)}"]${fv != null ? `[value="${CSS.escape(fv)}"]` : ""}`) : null;
     if(t && t !== document.activeElement){ try { t.focus({preventScroll:true}); if(sel && t.setSelectionRange) t.setSelectionRange(sel[0], sel[1]); } catch(e){} } }
@@ -3746,6 +3907,24 @@ document.addEventListener("click", async ev => {
     case "first-hr": S.ui.empErr = ""; S.drafts["emp-new"] = {hrAdmin:isAdmin(), jobLevel:"Supervisor", position:"HR Manager", dept:"Human Resources", status:"Active", ctype:"PKWTT", joinDate:today()}; S.modal = {kind:"emp"}; renderModal(); return;
     case "invite": await inviteEmp(id); render(); return;
     case "invite-all": await inviteMany(activeE().filter(x => canInvite(x) && !x.invitedAt).map(x => x.id)); return;
+    case "kiosk-new": if(!isHR()) return; S.ui.kCode = null; S.ui.kErr = ""; S.modal = {kind:"kiosk"}; renderModal(); return;
+    case "kiosk-code": if(!isHR()) return; try { const r = await kioskCall("repair", {id}); S.ui.kCode = r.code; S.modal = {kind:"kiosk"}; renderModal(); } catch(e){ toast(e?.message || "Error"); } return;
+    case "kiosk-revoke": if(!isHR()) return; if(S.ui.kRevoke !== id){ S.ui.kRevoke = id; render(); setTimeout(() => { if(S.ui.kRevoke === id){ S.ui.kRevoke = null; render(); } }, 4000); return; }
+      S.ui.kRevoke = null; try { await kioskCall("revoke", {id}); audit("kiosk_removed", id, ""); toast("Tablet removed. It can't record attendance any more."); } catch(e){ toast(e?.message || "Error"); } return;
+    case "face-consent": S.ui.cErr = ""; delete S.drafts.consent; S.modal = {kind:"consent"}; renderModal(); return;
+    case "face-withdraw": if(!S.ui.fWithdraw){ S.ui.fWithdraw = true; render(); setTimeout(() => { S.ui.fWithdraw = false; render(); }, 4000); return; }
+      S.ui.fWithdraw = false; try { await kioskCall("consent", {on:false}); audit("face_consent", nm(S.realEmpId), "withdrawn"); toast("Consent withdrawn — your face data was deleted. You can still use your PIN."); } catch(e){ toast(e?.message || "Error"); } return;
+    case "face-hrconsent": if(!isHR()) return; if(S.ui.fHrc !== id){ S.ui.fHrc = id; render(); setTimeout(() => { if(S.ui.fHrc === id){ S.ui.fHrc = null; render(); } }, 4000); return; }
+      S.ui.fHrc = null; try { await kioskCall("hrconsent", {empId:id, on:true}); audit("face_consent", nm(id), "written consent recorded by HR"); toast("Written consent recorded."); } catch(e){ toast(e?.message || "Error"); } return;
+    case "face-enroll": if(!isHR()) return; S.modal = {kind:"enroll", id}; renderModal(); return;
+    case "enroll-save": await saveEnroll(); return;
+    case "face-forget": if(!isHR()) return; if(S.ui.fForget !== id){ S.ui.fForget = id; render(); setTimeout(() => { if(S.ui.fForget === id){ S.ui.fForget = null; render(); } }, 4000); return; }
+      S.ui.fForget = null; try { await kioskCall("forget", {empId:id}); audit("face_deleted", nm(id), ""); toast("Face data deleted."); } catch(e){ toast(e?.message || "Error"); } return;
+    case "pin-set": S.ui.pErr = ""; delete S.drafts.pinset; S.modal = {kind:"pinset"}; renderModal(); return;
+    case "pin-reset": if(!isHR()) return; if(S.ui.pReset !== id){ S.ui.pReset = id; render(); setTimeout(() => { if(S.ui.pReset === id){ S.ui.pReset = null; render(); } }, 4000); return; }
+      S.ui.pReset = null; try { await kioskCall("resetpin", {empId:id}); audit("pin_reset", nm(id), ""); toast("PIN reset. They can set a new one in My Profile."); } catch(e){ toast(e?.message || "Error"); } return;
+    case "kphotos": { const [empId, date] = String(v).split("|"); S.ui.kPhotos = null; S.modal = {kind:"kphotos", empId, date, id:empId + date}; renderModal();
+      try { S.ui.kPhotos = await window.HRM.kioskPhotos(date, empId); } catch(e){ S.ui.kPhotos = {error:e?.message || "Couldn't load photos"}; } renderModal(); return; }
     case "emp-delete": if(!realAdmin()) return; S.ui.delErr = ""; delete S.drafts.empdel; S.modal = {kind:"empdel", id}; renderModal(); return;
     case "emp-edit": S.ui.empErr = ""; S.modal = {kind:"emp", id, rev:emp(id)?.rev}; renderModal(); return;
     case "contract-new": S.modal = {kind:"contract", id, rev:emp(id)?.rev}; renderModal(); return;
@@ -3959,6 +4138,9 @@ document.addEventListener("submit", async ev => {
   if(s === "emp") return saveEmp();
   if(s === "mfa") return mfaConfirm();
   if(s === "empdel") return deleteEmp();
+  if(s === "kiosk") return saveKiosk();
+  if(s === "consent") return saveConsent();
+  if(s === "pinset") return savePin();
   if(s === "contract") return saveContract();
   if(s === "quota") return saveQuota();
   if(s === "ann") return saveAnn();

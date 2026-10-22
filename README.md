@@ -55,6 +55,17 @@ Scheduled automatically by the HRD / GM / Admin app (idempotent, one record per 
 
 Flow: Scheduled → Draft (supervisor) → **Shared in session** (the 1:1 meeting; the employee can now read it) → **Acknowledged** by the employee (with an optional comment) → **Signed off** by HRD / GM (follow-up reminder for HR: contract, non-renewal notice, salary change). Visible only to the employee (once shared), the reviewer, HRD, GM and Admin; reviewers can't change assignment, dates, acknowledgement or sign-off fields (`0007_appraisals.sql`). Employees without a direct supervisor are listed in the pipeline so HR can fix it.
 
+### Attendance tablets (face recognition + PIN)
+
+A tablet at each office entrance opens **`kiosk.html`** and records attendance by face (with a blink check) or by Employee ID + PIN. Scans go straight into `attendance/<emp>_<month>` (same in/out/break pairing as the fingerprint imports; tablet scans `kp` and machine scans `mp` are merged per day) and so into the Attendance Report and the payroll recap.
+
+- **Set up a tablet:** HRM → Settings → Attendance → *Attendance tablets* → *Add tablet* (office + time zone WIB/WITA) → open the kiosk page on the tablet and type the 6-character code (valid 15 min). *Remove* revokes it immediately.
+- **Employees:** My Profile → *Face & PIN attendance* → agree to face attendance (UU PDP consent text) and set a 6-digit PIN. HRD can record written consent instead.
+- **Enrolment (HRD):** the employee's profile → *Enroll face* → 5 camera samples. Only 128-number face descriptors are stored (`faces/`, unreadable from the app); withdrawing consent, resigning or deleting the employee deletes them.
+- **Matching happens on the server** (edge function `kiosk`, `verify_jwt=false`, tablets authenticate with their own token); the tablet runs face detection, blink check and the descriptor (face-api / TensorFlow.js, models in `vendor/face-api/`).
+- **Proof photos:** ±15 KB per scan in the private bucket `kiosk`, deleted after 7 or 30 days (setting); HRD/GM/Admin view them from the daily log (📷). ~100 MB for 100 people at 30 days.
+- Offline: scans are queued on the tablet and sent with their time when the connection is back (max 24 h).
+
 ### Google Calendar (approved leave)
 
 Every fully approved leave request is added to one shared company Google Calendar as an all-day event ("🌴 Name — Annual Leave", position · division · office, request no., backup person, approver — never the reason). Optional: approved WFH days too (Settings → Notifications → Google Calendar). Handled by the `gcal` Edge Function, which re-reads the request so the calendar always matches the database.

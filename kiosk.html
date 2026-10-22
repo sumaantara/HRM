@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="robots" content="noindex,nofollow">
+<meta name="theme-color" content="#0d1224">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob: mediastream:; connect-src 'self' https://*.supabase.co; object-src 'none'; base-uri 'self'; form-action 'self'">
+<title>ONEderland Attendance</title>
+<link rel="icon" href="assets/favicon.ico" sizes="any">
+<link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+<style>
+:root{--bg:#0d1224;--card:#151c33;--line:#26304f;--ink:#f3f5fb;--muted:#9aa3bd;--pri:#4f6bff;--ok:#1fb86a;--bad:#ef4b3f;--warn:#f0a43a}
+*{box-sizing:border-box}html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;-webkit-user-select:none;user-select:none;overflow:hidden}
+button{font:inherit;cursor:pointer;border:0;border-radius:14px;padding:14px 22px;font-weight:600;background:#25305a;color:var(--ink)}button.pri{background:var(--pri)}button:disabled{opacity:.5}
+input{font:inherit;font-size:1.6rem;padding:14px 16px;border-radius:12px;border:1px solid var(--line);background:#0f1530;color:var(--ink);width:100%;text-align:center;letter-spacing:.12em;text-transform:uppercase}
+.screen{position:fixed;inset:0;display:none}.screen.on{display:flex}
+header{position:fixed;top:0;left:0;right:0;display:flex;align-items:center;gap:16px;padding:16px 22px;z-index:5;background:linear-gradient(#0d1224ee,#0d122400)}
+header img{height:34px}header .office{font-weight:600}header .office small{display:block;color:var(--muted);font-weight:400;font-size:.8rem}header .grow{flex:1}
+.clock{text-align:right}.clock b{display:block;font-size:2.2rem;font-variant-numeric:tabular-nums;line-height:1}.clock span{color:var(--muted);font-size:.85rem}
+#cam{flex-direction:column;align-items:center;justify-content:center}
+.stage{position:relative;width:min(92vw,92vh*.75,620px);aspect-ratio:3/4;border-radius:28px;overflow:hidden;background:#000;box-shadow:0 30px 80px #0008}
+video{width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
+.ring{position:absolute;inset:9% 14% 16%;border:4px solid #ffffff55;border-radius:48%;transition:border-color .2s}.ring.face{border-color:var(--pri)}.ring.go{border-color:var(--ok)}
+.prompt{margin-top:22px;text-align:center;min-height:86px}.prompt b{display:block;font-size:1.7rem}.prompt span{color:var(--muted)}
+.actions{position:fixed;bottom:22px;left:0;right:0;display:flex;justify-content:center;gap:12px}
+.result{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:#0d1224e6;z-index:20}.result.on{display:flex}
+.rcard{background:var(--card);border-radius:28px;padding:36px 44px;text-align:center;min-width:min(520px,90vw);border-top:8px solid var(--ok)}.rcard.bad{border-top-color:var(--bad)}.rcard.warn{border-top-color:var(--warn)}
+.rcard .big{font-size:3.2rem;font-weight:700;font-variant-numeric:tabular-nums;margin:6px 0}.rcard h2{margin:0 0 4px;font-size:1.9rem}.rcard p{margin:6px 0;color:var(--muted);font-size:1.1rem}
+.panel{margin:auto;background:var(--card);border-radius:24px;padding:28px;width:min(440px,92vw);display:grid;gap:14px;text-align:center}
+.panel h1{margin:0;font-size:1.5rem}.panel p{margin:0;color:var(--muted)}
+.keys{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.keys button{font-size:1.6rem;padding:16px 0;background:#202a4f}
+.dots{display:flex;justify-content:center;gap:10px}.dots i{width:16px;height:16px;border-radius:50%;border:2px solid var(--muted)}.dots i.f{background:var(--ink);border-color:var(--ink)}
+.toast{position:fixed;left:50%;bottom:90px;transform:translateX(-50%);background:#000c;padding:10px 18px;border-radius:12px;display:none;z-index:30}.toast.on{display:block}
+.net{position:fixed;top:70px;right:22px;font-size:.85rem;padding:6px 12px;border-radius:999px;background:#3a2410;color:#ffcf8a;display:none;z-index:6}.net.on{display:block}
+.err{color:#ff9b93}
+</style>
+</head>
+<body>
+<header id="hdr" hidden><img src="assets/logo.png" alt="ONEderland"><div class="office" id="h-office"></div><span class="grow"></span><div class="clock"><b id="h-time">--:--</b><span id="h-date"></span></div></header>
+<div class="net" id="net"></div>
+
+<section class="screen on" id="boot"><div class="panel"><h1>ONEderland Attendance</h1><p id="boot-msg">Memuat… · Loading…</p></div></section>
+
+<section class="screen" id="pair"><form class="panel" id="pair-form" autocomplete="off">
+  <img src="assets/logo.png" alt="ONEderland" style="height:40px;margin:0 auto">
+  <h1>Daftarkan tablet ini</h1><p>Register this tablet — HR creates a 6-character code in HRM → Settings → Attendance → Attendance tablets.</p>
+  <input id="pair-code" maxlength="7" placeholder="ABC123" inputmode="text" autocapitalize="characters">
+  <p class="err" id="pair-err"></p><button class="pri" type="submit">Daftarkan · Register</button></form></section>
+
+<section class="screen" id="cam">
+  <div class="stage"><video id="video" playsinline muted autoplay></video><div class="ring" id="ring"></div></div>
+  <div class="prompt" id="prompt"><b>Lihat ke kamera</b><span>Look at the camera</span></div>
+  <div class="actions"><button type="button" id="btn-pin">Pakai PIN · Use PIN</button><button type="button" id="btn-fs" title="Full screen">⛶</button></div>
+</section>
+
+<section class="screen" id="pin"><form class="panel" id="pin-form" autocomplete="off">
+  <h1>Absen dengan PIN</h1><p>Attendance with PIN</p>
+  <input id="pin-emp" placeholder="ID karyawan · Employee ID" autocapitalize="characters">
+  <div class="dots" id="pin-dots"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+  <div class="keys" id="keys"></div>
+  <p class="err" id="pin-err"></p>
+  <div style="display:flex;gap:10px"><button type="button" id="pin-cancel" style="flex:1">Batal · Cancel</button><button class="pri" type="submit" style="flex:1">Absen · Submit</button></div></form></section>
+
+<div class="result" id="result"><div class="rcard" id="rcard"></div></div>
+<div class="toast" id="toast"></div>
+<canvas id="snap" hidden></canvas>
+<script src="js/config.js"></script>
+<script src="vendor/face-api/face-api.js"></script>
+<script src="js/kiosk.js"></script>
+</body>
+</html>
