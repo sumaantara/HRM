@@ -41,6 +41,20 @@ app changes their access within a minute. A profile set to **Resigned** loses ac
 3. The person clicks **Set my password**, chooses a password and lands in the app — the account is already
    connected to their profile (verified email). Later sign-ins: work email + password, or *Forgot password?*.
 
+### Probation & performance reviews
+
+Scheduled automatically by the HRD / GM / Admin app (idempotent, one record per employee + review + contract) and assigned to the employee's direct supervisor:
+
+| Review | When | Content | Outcome |
+|---|---|---|---|
+| Probation — Initial | join + 7 days | onboarding activities (status + note), probation objectives | On track / needs attention |
+| Probation — Mid | week 1 of month 2 | 6 competencies (1–5), plan | On track / improvement plan / at risk |
+| Probation — Final | mid month 3 | 6 competencies, decision | Pass / pass with plan / not pass |
+| Mid-contract performance | 1 month before the contract midpoint (permanent staff: 31 May) | 8 weighted KPIs → score → band A–E with salary guide | Increase % / no increase / PIP |
+| Pre-renewal | 6 months before a PKWT ends | same KPIs | Renew (6/12/24 mo) / with PIP / convert to PKWTT / don't renew |
+
+Flow: Scheduled → Draft (supervisor) → **Shared in session** (the 1:1 meeting; the employee can now read it) → **Acknowledged** by the employee (with an optional comment) → **Signed off** by HRD / GM (follow-up reminder for HR: contract, non-renewal notice, salary change). Visible only to the employee (once shared), the reviewer, HRD, GM and Admin; reviewers can't change assignment, dates, acknowledgement or sign-off fields (`0007_appraisals.sql`). Employees without a direct supervisor are listed in the pipeline so HR can fix it.
+
 ### Google Calendar (approved leave)
 
 Every fully approved leave request is added to one shared company Google Calendar as an all-day event ("🌴 Name — Annual Leave", position · division · office, request no., backup person, approver — never the reason). Optional: approved WFH days too (Settings → Notifications → Google Calendar). Handled by the `gcal` Edge Function, which re-reads the request so the calendar always matches the database.

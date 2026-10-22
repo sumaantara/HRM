@@ -522,6 +522,7 @@
       }
       return data;
     },
+    async apprAck(id, comment) { const { data, error } = await sb.rpc("hrm_appraisal_ack", { aid: id, comment: comment || "" }); if (error) throw mapErr(error); return data; },
     async gcal(action, extra) {
       const { data, error } = await sb.functions.invoke("gcal", { body: Object.assign({ action }, extra || {}) });
       if (error) { let d = {}; try { d = await error.context.json(); } catch (e) { /* none */ } throw { code: d.error || "server_error", message: String(d.error || error.message || "server error").replace(/_/g, " "), detail: d.detail || "" }; }

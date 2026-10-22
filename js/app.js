@@ -78,7 +78,7 @@ const DEFAULT_CONFIG = {
 /* ================= state ================= */
 const S = {
   mode:"loading", db:null, mcp:undefined, D:{employees:[],requests:[],candidates:[],tasks:[],reviews:[],reminders:[],notifs:[],announcements:[],attendance:[],attImports:[],backups:[]},
-  R:{employees:[],private:[],requests:[],candidates:[],tasks:[],reviews:[],reminders:[],notifs:[],announcements:[],attendance:[],attImports:[],backups:[],dec:[],links:[],rd:[],ph:[],sub:[],payslips:[],payruns:[],ingest:null,sync:null},
+  R:{employees:[],private:[],requests:[],candidates:[],tasks:[],reviews:[],reminders:[],notifs:[],announcements:[],attendance:[],attImports:[],backups:[],dec:[],links:[],rd:[],ph:[],sub:[],payslips:[],payruns:[],appraisals:[],ingest:null,sync:null},
   pv:{}, P:{}, prof:{}, profAsk:new Set(), errors:[], mySubs:[], uid:null, who:null, user:null, canEdit:false, canWrite:null, isOwner:false, realEmpId:null, preview:null, loadedAll:false, offline:false,
   config:clone(DEFAULT_CONFIG), me:null, view:"dashboard", prm:{}, pop:null, modal:null, drafts:{}, ui:{}, loaded:{}, q:""
 };
@@ -239,6 +239,10 @@ const NOTIFY = {
   note:              ["New note on profile", "Employee", "file", 3, false, "People"],
   account:           ["Account connected", "Employee", "shield", 5, false, "People"],
   payslip:           ["Payslip published", "Employee", "doc", 5, true, "Payroll"],
+  appraisal_due:     ["Probation / performance review scheduled or assigned", "Supervisor (reviewer)", "star", 4, true, "Performance"],
+  appraisal_shared:  ["Review shared after the session", "Employee reviewed", "star", 4, true, "Performance"],
+  appraisal_ack:     ["Review acknowledged / waiting sign-off", "Reviewer and HRD", "check", 4, false, "Performance"],
+  appraisal_closed:  ["Review signed off by HR", "Employee and reviewer", "shield", 5, true, "Performance"],
 };
 const LEGACY_NOTIF = {review_task:"onTask"};
 const emailOn = kind => { const n = cfg().notify || {}; if(kind in n) return !!n[kind]; const l = LEGACY_NOTIF[kind]; if(l && cfg().email && l in cfg().email) return !!cfg().email[l]; return !!(NOTIFY[kind] && NOTIFY[kind][4]); };
@@ -290,11 +294,11 @@ const dv = (k, n, d) => (S.drafts[k] && n in S.drafts[k]) ? S.drafts[k][n] : d;
    rd/<uid>, ph/<uid>   per-person read receipts and self-uploaded profile photo
    audit/<uid>/m/<yyyy-mm>  each person's own monthly audit trail
    requests, notifs, counters   shared working data (Contributors write) */
-const APP_VERSION = "3.9.1", SCHEMA = 2;
+const APP_VERSION = "4.0.0", SCHEMA = 2;
 const PRIVATE_FIELDS = ["phone","gender","birthDate","address","exitReason","contract","contracts","notes","quotaLog"];
-const SUB_COLS = ["employees","private","requests","candidates","tasks","reviews","reminders","notifs","announcements","attendance","attImports","backups","dec","links","rd","ph","sub","payslips","payruns"];
+const SUB_COLS = ["employees","private","requests","candidates","tasks","reviews","reminders","notifs","announcements","attendance","attImports","backups","dec","links","rd","ph","sub","payslips","payruns","appraisals"];
 const CORE_COLS = ["employees","requests","tasks","notifs","announcements","attendance"];
-const BACKUP_COLS = ["employees","private","requests","candidates","tasks","reviews","reminders","notifs","announcements","attendance","attImports","backups","dec","links","rd","ph","counters"];
+const BACKUP_COLS = ["employees","private","requests","candidates","tasks","reviews","reminders","notifs","announcements","attendance","attImports","backups","dec","links","rd","ph","counters","appraisals"];
 const DB_RULES = [
   {path:"", read:"interact", write:"admin"},
   {path:"requests", read:"interact", write:"interact"},
@@ -361,7 +365,9 @@ function rebuild(){
 const pendingReview = (taskId, empId) => (S.mySubs||[]).some(s => s.kind === "review" && s.taskId === taskId && s.empId === empId && !String(s.state).startsWith("rejected"));
 
 /* ---- writes ---- */
+let apT = null;
 async function putEmployee(e){
+  clearTimeout(apT); apT = setTimeout(() => apEnsure(), 2500);   // new hires / contract changes → schedule their reviews
   const now = new Date().toISOString(), cur = S.R.employees.find(x => x.id === e.id);
   const full = Object.assign({}, e);
   full.rev = (Number(cur?.rev)||0) + 1; full.updatedAt = now; full.updatedBy = S.realEmpId || S.me || null;
@@ -708,7 +714,7 @@ function sample(){
 
 /* ================= navigation ================= */
 function navItems(){
-  const n = S.me ? pendingFor(S.me).length : 0, openTasks = S.D.tasks.filter(t => t.status === "open" && t.supervisorId === S.me).length;
+  const n = S.me ? pendingFor(S.me).length : 0, openTasks = S.D.tasks.filter(t => t.status === "open" && t.supervisorId === S.me).length + apMine().length;
   const g = [["Overview", [["dashboard","Dashboard","grid"],["announcements","Announcements","mega",annUnread().length]]]];
   if(isMgmt()) g.push(["People", [["directory","Employees","users"],["recruitment","Recruitment","brief"],["attendance","Attendance","fp"],["reviews","Performance","star",openTasks],["reminders","Contracts & Reminders","clock"]]]);
   else if(isLead()) g.push(["My Team", [["directory","Employees","users"],["reviews","Performance Reviews","star",openTasks]]]);
@@ -1403,8 +1409,9 @@ function pPerformance(e){
   const list = S.D.reviews.filter(r => r.empId === e.id).sort((a,b) => b.submittedAt.localeCompare(a.submittedAt));
   const open = S.D.tasks.filter(t => t.status === "open" && t.memberIds.includes(e.id) && !t.done.includes(e.id));
   return `<div class="note">${ic("info")}<div>Performance reviews are private: visible only to ${esc(first(e.id))}, their supervisor, HRD and the General Manager.</div></div>
+  ${apProfile(e)}
   ${open.map(t => `<div class="note warn">${ic("clock")}<div><b>${esc(t.title)}</b> is in progress with ${esc(nm(t.supervisorId))}, due ${fmt(t.due)}.${t.supervisorId === S.me ? ` <button class="btn link" type="button" data-act="review-open" data-task="${t.id}" data-emp="${e.id}">Write it now</button>` : ""}</div></div>`).join("")}
-  ${list.length ? list.map(rv => reviewCard(rv)).join("") : `<section class="card"><div class="empty"><b>No reviews yet</b>Completed reviews from the supervisor will appear here.</div></section>`}`;
+  ${list.length ? list.map(rv => reviewCard(rv)).join("") : apAll().some(a => a.empId === e.id) ? "" : `<section class="card"><div class="empty"><b>No reviews yet</b>Probation and performance reviews appear here once they're scheduled.</div></section>`}`;
 }
 function reviewCard(rv){
   const crit = Object.entries(rv.scores||{});
@@ -1416,6 +1423,13 @@ function reviewCard(rv){
 
 /* ---------- reviews ---------- */
 function vReviews(){
+  const P = apPage();
+  const head = `<div class="page-h"><div><h1>Performance & Probation Reviews</h1><p>Probation reviews (initial, mid, final), the mid-contract performance review and the pre-renewal review are scheduled automatically and assigned to each person's supervisor. Every review is delivered in a 1:1 session.</p></div>${isHR() ? `<button class="btn" type="button" data-act="task-new">${ic("plus")}Ad-hoc review task</button>` : ""}</div>`;
+  const tabs = `<div class="tabs" role="tablist" style="padding:0 14px">${P.tabs.map(([k,l]) => `<button type="button" role="tab" data-act="aptab" data-v="${k}" aria-selected="${P.tab===k}">${l}</button>`).join("")}</div>`;
+  if(P.tab !== "tasks") return head + `<section class="card">${tabs}${P.body}</section>`;
+  return head + `<section class="card">${tabs}</section>` + vReviewTasks();
+}
+function vReviewTasks(){
   const m = me(), mine = S.D.tasks.filter(t => t.supervisorId === m.id).sort((a,b) => (a.status==="open"?0:1)-(b.status==="open"?0:1) || a.due.localeCompare(b.due));
   const all = [...S.D.tasks].sort((a,b) => b.createdAt.localeCompare(a.createdAt));
   const taskRow = (t, manage) => `<section class="card"><div class="card-h"><span class="tile c4" style="width:40px;height:40px">${ic("star")}</span><h2>${esc(t.title)}<br><span class="small muted" style="font-family:var(--f-body);font-weight:500">${esc(t.period)} · ${manage?`Supervisor ${esc(nm(t.supervisorId))} · `:`Assigned by ${esc(nm(t.createdBy))} · `}due ${fmt(t.due)}</span></h2>
@@ -1426,8 +1440,7 @@ function vReviews(){
       if(!done && pendingReview(t.id, id)) return `<div class="li">${who(id, emp(id)?.position)}<span class="grow"></span><span class="pill p-info">Submitted · HR processing</span></div>`;
       return `<div class="li">${who(id, emp(id)?.position)}<span class="grow"></span>${done ? `<span class="pill p-approved">Submitted${rv?` · ${Number(rv.overall).toFixed(1)}`:""}</span>${canSeePrivate(id)?`<button class="btn sm" type="button" data-act="open-emp" data-id="${id}" data-tab="performance">View</button>`:""}` :
         t.supervisorId === S.me ? `<button class="btn sm pri" type="button" data-act="review-open" data-task="${t.id}" data-emp="${id}">Write review</button>` : `<span class="pill p-pending">Waiting</span>`}</div>`; }).join("")}</div></section>`;
-  return `<div class="page-h"><div><h1>Performance Reviews</h1><p>${isHR() ? "Assign review tasks to supervisors. They get an in-app notification and an email, and the finished review is saved to the employee's profile." : "Review tasks assigned to you by HRD. Finished reviews are saved privately to each team member's profile."}</p></div>
-    ${isHR() ? `<button class="btn pri" type="button" data-act="task-new">${ic("plus")}Assign review task</button>` : ""}</div>
+  return `<p class="muted">${isHR() ? "One-off reviews outside the automatic programs (e.g. quarterly). The finished review is saved to the employee's profile." : "Review tasks assigned to you by HRD."}</p>
   ${mine.length ? `<h2>Assigned to me</h2>${mine.map(t => taskRow(t, false)).join("")}` : (!isMgmt() ? `<section class="card"><div class="empty"><b>No review tasks</b>HRD will assign performance reviews for your team here.</div></section>` : "")}
   ${isMgmt() ? `<h2>All review tasks</h2>${all.length ? all.map(t => taskRow(t, true)).join("") : `<section class="card"><div class="empty"><b>No review tasks yet</b>Assign the first one to a supervisor.</div></section>`}` : ""}`;
 }
@@ -1508,6 +1521,291 @@ async function saveReview(){
     await notify(e.id, `Your ${t.period} performance review is available`, `Reviewed by ${nm(S.me)}`, "profile", e.id, "review_ready",
       {intro:`Your ${t.period} performance review by ${nm(S.me)} is ready. You can read the scores and feedback on your profile under Performance.`, rows:[["Period", t.period], ["Reviewer", nm(S.me)]], cta:{label:"Read my review", go:"profile", ref:e.id}});
   }, `Review for ${e.name} submitted.`);
+}
+
+/* ---------- probation & performance reviews (appraisals) ----------
+   Three programs, all delivered in a 1:1 session between the supervisor and the employee:
+   • Probation — Initial (week 1, onboarding & objectives), Mid (week 1 of month 2), Final (mid month 3, pass / not pass).
+     Created automatically for every employee on probation, assigned to their supervisor.
+   • Mid-contract performance review — one month before the contract's midpoint (permanent staff: 31 May each year).
+     General KPIs with weights → score → rating band → salary-increase recommendation.
+   • Pre-renewal review — six months before a fixed-term contract ends: renew / convert / don't renew.
+   Flow: Scheduled → Draft (supervisor) → Shared in the session (employee can read it) → Acknowledged by the employee
+         → Signed off by HRD / GM (closed; follow-up reminders for HR).
+   Visible to the employee (once shared), their reviewer, HRD, GM and Admin — enforced in the database (0007_appraisals.sql). */
+const addMonths = (s, n) => { const d = parse(s), day = d.getDate(); d.setDate(1); d.setMonth(d.getMonth() + n); const last = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate(); d.setDate(Math.min(day, last)); return iso(d); };
+const AP_SCALE = [[1,"Unsatisfactory"],[2,"Needs improvement"],[3,"Meets expectations"],[4,"Exceeds expectations"],[5,"Outstanding"]];
+const AP_PROB = [["learning","Job knowledge & learning speed","Understands the role and picks up new tasks quickly."],["quality","Quality of work","Accurate and careful; work needs little correction."],
+  ["productivity","Productivity & timeliness","Finishes assigned work on time."],["discipline","Attendance & discipline","Punctual, present, follows company rules."],
+  ["teamwork","Teamwork & communication","Works well with the team, communicates clearly."],["culture","Attitude & company values","Positive attitude, integrity, fits the company culture."]].map(([k,l,h]) => [k,l,1,h]);
+const AP_KPI = [["results","Job results & target achievement",30,"Delivers the goals / targets of the role (sales, cases, projects, SLA)."],["quality","Quality of work",15,"Accuracy and thoroughness; little rework."],
+  ["productivity","Productivity & timeliness",15,"Output and workload handled; meets deadlines."],["knowledge","Job knowledge & skills",10,"Functional / technical skill; uses tools and SOPs well."],
+  ["initiative","Initiative & problem solving",10,"Takes ownership, solves problems, proposes improvements."],["teamwork","Teamwork & communication",10,"Collaborates and communicates clearly with team and clients."],
+  ["discipline","Discipline & attendance",5,"Punctuality, attendance, follows company rules."],["integrity","Integrity & company values",5,"Honest, reliable, represents the company's values."]];
+const AP_ACTS = [["intro","Welcome & introduction to the team"],["jobdesc","Job description & responsibilities explained"],["objectives","Probation objectives (30-60-90 days) agreed"],
+  ["tools","Tools, accounts & workspace ready"],["policy","Company policies, SOP & code of conduct briefed"],["buddy","Buddy / mentor assigned"]];
+const AP_ACT_ST = [["todo","Not started"],["progress","In progress"],["done","Done"],["na","Not applicable"]];
+const AP_STAGE = {initial:"Initial", mid:"Mid", final:"Final"};
+const AP_KIND = {probation:"Probation review", midterm:"Mid-contract performance review", renewal:"Pre-renewal review"};
+const AP_DECISIONS = {
+  initial:["On track","Needs attention"],
+  mid:["On track","Needs improvement — improvement plan agreed","At risk of not passing probation"],
+  final:["Pass — confirm as staff","Pass with a development plan","Not pass — end employment at the end of probation"],
+  midterm:["Recommend salary increase","No increase — keep developing","No increase — performance improvement plan (PIP)"],
+  renewal:["Renew contract","Renew with conditions (PIP)","Convert to permanent (PKWTT)","Do not renew"]};
+const AP_STATUS = {scheduled:["Scheduled","p-neutral"], draft:["Draft","p-info"], shared:["Shared · waiting acknowledgement","p-pending"], acknowledged:["Acknowledged · waiting sign-off","p-pending"], closed:["Signed off","p-approved"], cancelled:["Cancelled","p-cancelled"]};
+const AP_FLOW = ["scheduled","draft","shared","acknowledged","closed"];
+const apBand = s => !s ? null : s >= 4.5 ? ["A","Outstanding","8–10%"] : s >= 3.75 ? ["B","Exceeds expectations","5–7%"] : s >= 3 ? ["C","Meets expectations","3–4%"] : s >= 2 ? ["D","Needs improvement","0% · development plan"] : ["E","Unsatisfactory","0% · PIP"];
+const apKey = a => a.kind === "probation" ? a.stage : a.kind;
+const apItems = a => a.kind === "probation" ? (a.stage === "initial" ? [] : AP_PROB) : AP_KPI;
+const apTitle = a => a.kind === "probation" ? `Probation review — ${AP_STAGE[a.stage]}` : AP_KIND[a.kind];
+const apAll = () => S.R.appraisals || [];
+const apOf = id => apAll().find(a => a.id === id);
+const apScore = (items, scores) => { const f = items.filter(([k]) => Number(scores?.[k])); if(f.length < items.length || !items.length) return 0; const w = items.reduce((s, x) => s + x[2], 0); return Math.round(items.reduce((s, [k,,wt]) => s + Number(scores[k]) * wt, 0) / w * 100) / 100; };
+const apOverdue = a => !["shared","acknowledged","closed","cancelled"].includes(a.status) && a.due < today();
+const apOpen = a => !["closed","cancelled"].includes(a.status);
+const apCanEdit = a => !!a && apOpen(a) && ((a.reviewerId === S.me && ["scheduled","draft"].includes(a.status)) || (isMgmt() && a.status !== "acknowledged"));
+const apMine = () => apAll().filter(a => a.reviewerId === S.me && ["scheduled","draft"].includes(a.status) && a.opensAt <= today());
+
+/* plan: create the reviews each employee needs (idempotent: one id per employee + review + cycle) — run by HRD / GM / Admin clients */
+function apPlan(){
+  const out = [], t = today();
+  for(const e of activeE()){
+    if(!e.joinDate) continue;
+    const c = e.contract || {}, base = {empId:e.id, reviewerId:e.supervisorId || null};
+    if(e.status === "Probation" || c.type === "Probation"){
+      const j = e.joinDate;
+      out.push(Object.assign({id:`${e.id}-prob-initial`, kind:"probation", stage:"initial", cycle:j, opensAt:j, due:addDays(j, 7)}, base));
+      out.push(Object.assign({id:`${e.id}-prob-mid`, kind:"probation", stage:"mid", cycle:j, opensAt:addMonths(j, 1), due:addDays(addMonths(j, 1), 7)}, base));
+      out.push(Object.assign({id:`${e.id}-prob-final`, kind:"probation", stage:"final", cycle:j, opensAt:addMonths(j, 2), due:addDays(addMonths(j, 2), 14)}, base));
+      continue;
+    }
+    const cyc = String(c.no || c.start || "").replace(/[^A-Za-z0-9]+/g, "-").slice(0, 30) || "c";
+    if(c.start && c.end){
+      const mid = addDays(c.start, Math.round(diffDays(c.start, c.end) / 2)), midDue = addMonths(mid, -1);
+      const renDue = [addMonths(c.end, -6), mid].sort()[1];
+      if(diffDays(midDue, renDue) > 45 && midDue > addMonths(c.start, 1)) out.push(Object.assign({id:`${e.id}-mid-${cyc}`, kind:"midterm", cycle:cyc, opensAt:addDays(midDue, -21), due:midDue, window:[addDays(midDue, -45), addDays(midDue, 30)]}, base));
+      out.push(Object.assign({id:`${e.id}-ren-${cyc}`, kind:"renewal", cycle:cyc, opensAt:addDays(renDue, -21), due:renDue, window:[addDays(renDue, -45), addDays(c.end, 0)]}, base));
+    } else if(c.type === "PKWTT" || (!c.end && e.status === "Active")){
+      const y = t.slice(0, 4), due = `${y}-05-31`;
+      if(e.joinDate <= `${y}-01-31`) out.push(Object.assign({id:`${e.id}-mid-${y}`, kind:"midterm", cycle:y, opensAt:addDays(due, -21), due, window:[addDays(due, -45), addDays(due, 30)]}, base));
+    }
+  }
+  return out.filter(a => !a.window || (t >= a.window[0] && t <= a.window[1])).map(a => { const x = Object.assign({}, a); delete x.window; return x; });
+}
+let apBusy = false;
+async function apEnsure(manual){
+  if(apBusy || !(S.mode !== "db" ? isHR() : S.canEdit) || !S.loadedAll && S.mode === "db") return 0;
+  apBusy = true; let n = 0; const byRev = new Map(), now = new Date().toISOString();
+  try {
+    for(const a of apPlan()){
+      if(apOf(a.id) || !a.reviewerId) continue;
+      const doc = Object.assign(a, {title:apTitle(a), status:"scheduled", createdAt:now, createdBy:S.realEmpId || S.me || null, history:[{at:now, by:S.realEmpId || S.me || null, action:"scheduled", note:`Due ${a.due}`}]});
+      await store.put("appraisals", doc);
+      n++; (byRev.get(a.reviewerId) || byRev.set(a.reviewerId, []).get(a.reviewerId)).push(doc);
+    }
+    for(const [rid, list] of byRev){
+      const first1 = list.sort((x, y) => x.due.localeCompare(y.due))[0];
+      await notify(rid, list.length === 1 ? `${first1.title}: ${nm(first1.empId)}` : `${list.length} reviews scheduled for your team`, list.map(a => `${nm(a.empId)} · ${a.kind === "probation" ? AP_STAGE[a.stage] : AP_KIND[a.kind]} · due ${fmt(a.due)}`).join("\n").slice(0, 300), "reviews", first1.id, "appraisal_due",
+        {heading:"Reviews scheduled for your team", intro:`The HRM scheduled the following review${list.length > 1 ? "s" : ""}. Fill in each one before the session with the employee, then share it during the session.`,
+         rows:list.slice(0, 8).map(a => [nm(a.empId), `${apTitle(a)} — due ${fmt(a.due)}`]), tone:"info", cta:{label:"Open my reviews", go:"reviews", ref:first1.id}});
+    }
+    if(n) audit("reviews_scheduled", `${n} review(s)`, "");
+  } finally { apBusy = false; }
+  if(manual) toast(n ? `${n} review(s) scheduled and assigned to supervisors.` : "Everything is already scheduled.");
+  return n;
+}
+function apNoSupervisor(){ return apPlan().filter(a => !a.reviewerId && !apOf(a.id)).map(a => a.empId).filter((x, i, l) => l.indexOf(x) === i); }
+
+/* attendance summary for the review (since joining for probation, last 6 months otherwise) */
+function apAttendance(a){
+  const e = emp(a.empId); if(!e) return null;
+  const from = a.kind === "probation" ? e.joinDate.slice(0, 7) : addMonths(today(), -6).slice(0, 7), to = today().slice(0, 7), r = {expected:0, present:0, late:0, absent:0, leave:0, wfh:0};
+  for(let m = from; m <= to; m = addMonths(m + "-01", 1).slice(0, 7)){ const x = computeAtt(e, m); if(!x.hasData && !x.wfh) continue; for(const k of Object.keys(r)) r[k] += x[k] || 0; }
+  if(!r.expected) return null; r.rate = Math.round((r.present + r.wfh) / Math.max(1, r.expected - r.leave) * 100); return r;
+}
+
+/* ---- UI ---- */
+const apPill = a => { const [l, c] = AP_STATUS[a.status] || [a.status, "p-neutral"]; return apOverdue(a) ? `<span class="pill p-rejected">Overdue · ${esc(l)}</span>` : `<span class="pill ${c}">${esc(l)}</span>`; };
+function apStepper(a){
+  const i = AP_FLOW.indexOf(a.status), labels = ["Scheduled","Draft","Shared in session","Acknowledged","Signed off"];
+  return `<ol class="ap-steps">${labels.map((l, k) => `<li class="${a.status === "cancelled" ? "" : k < i ? "done" : k === i ? "now" : ""}"><span>${k < i ? ic("check") : k + 1}</span>${l}</li>`).join("")}</ol>`;
+}
+function apRow(a, opt = {}){
+  const sc = a.overall ? `<b>${Number(a.overall).toFixed(2)}</b> <span class="small muted">${esc(a.band || "")}</span>` : `<span class="muted">—</span>`;
+  return `<tr class="click" data-act="ap-open" data-id="${esc(a.id)}">${opt.emp !== false ? `<td class="wide">${who(a.empId, emp(a.empId)?.position || "")}</td>` : ""}
+    <td data-l="Review"><b style="font-weight:600">${esc(apTitle(a))}</b>${a.kind !== "probation" ? `<span class="small muted" style="display:block">${esc(a.cycle || "")}</span>` : ""}</td>
+    <td data-l="Due" class="nw">${fmt(a.due)}</td>${opt.reviewer !== false ? `<td data-l="Reviewer">${a.reviewerId ? esc(nm(a.reviewerId)) : `<span class="pill p-rejected">No reviewer</span>`}</td>` : ""}
+    <td data-l="Status">${apPill(a)}</td><td data-l="Score" class="nw">${sc}</td><td data-l="Decision" class="small">${esc(a.hrDecision || a.decision || "—")}</td></tr>`;
+}
+function apTable(list, opt){
+  return list.length ? `<div class="tw"><table class="t rt"><thead><tr>${opt?.emp !== false ? "<th>Employee</th>" : ""}<th>Review</th><th>Due</th>${opt?.reviewer !== false ? "<th>Reviewer</th>" : ""}<th>Status</th><th>Score</th><th>Decision</th></tr></thead><tbody>${list.map(a => apRow(a, opt)).join("")}</tbody></table></div>`
+    : `<div class="empty"><b>Nothing here</b>${opt?.empty || ""}</div>`;
+}
+function apProbationPipe(empId){
+  const st = ["initial","mid","final"].map(s => apOf(`${empId}-prob-${s}`));
+  if(!st.some(Boolean)) return "";
+  return `<div class="ap-pipe">${st.map((a, i) => { const s = ["initial","mid","final"][i];
+    return a ? `<button type="button" class="ap-node ${a.status === "closed" ? "ok" : apOverdue(a) ? "bad" : ["shared","acknowledged"].includes(a.status) ? "mid" : ""}" data-act="ap-open" data-id="${esc(a.id)}"><b>${AP_STAGE[s]}</b><span>${a.status === "closed" ? esc((a.hrDecision || a.decision || "Done").split(" — ")[0]) : `due ${fmt(a.due)}`}</span><small>${esc((AP_STATUS[a.status] || [a.status])[0].split(" · ")[0])}</small></button>`
+      : `<div class="ap-node off"><b>${AP_STAGE[s]}</b><span>not visible yet</span></div>`; }).join(`<i aria-hidden="true"></i>`)}</div>`;
+}
+/* profile → Performance */
+function apProfile(e){
+  const list = apAll().filter(a => a.empId === e.id).sort((a, b) => b.due.localeCompare(a.due));
+  if(!list.length) return isMgmt() && e.status === "Probation" && !e.supervisorId ? `<div class="note warn">${ic("alert")}<div>${esc(first(e.id))} is on probation but has no direct supervisor, so the probation reviews can't be assigned. Set a supervisor on the profile.</div></div>` : "";
+  const prob = list.filter(a => a.kind === "probation"), perf = list.filter(a => a.kind !== "probation");
+  return `${prob.length ? `<section class="card"><div class="card-h"><span class="tile c4">${ic("star")}</span><h2>Probation pipeline</h2><span class="tag">joined ${fmt(e.joinDate)}</span></div><div class="card-b">${apProbationPipe(e.id)}</div></section>` : ""}
+    ${perf.length ? `<section class="card"><div class="card-h"><span class="tile c4">${ic("chart")}</span><h2>Performance reviews</h2></div>${apTable(perf, {emp:false})}</section>` : ""}`;
+}
+/* Reviews page */
+function apPage(){
+  const tab = S.ui.aptab || (isMgmt() ? "pipeline" : "mine");
+  const mine = apAll().filter(a => a.reviewerId === S.me && apOpen(a)).sort((a, b) => a.due.localeCompare(b.due));
+  const tabs = [["mine", `My team's reviews${mine.length ? ` · ${mine.length}` : ""}`]].concat(isMgmt() ? [["pipeline","Company pipeline"]] : []).concat([["tasks","Ad-hoc review tasks"]]);
+  let body = "";
+  if(tab === "mine"){
+    body = `<div class="card-b"><p class="muted" style="margin:0">Fill in each review before the session, then go through it with the employee and press <b>Share in session</b>. The employee acknowledges it in the HRM and HRD signs it off.</p></div>${apTable(mine, {reviewer:false, empty:"No reviews waiting for you."})}`;
+  } else if(tab === "pipeline"){
+    const f = S.ui.apf || "open", all = apAll().filter(a => f === "all" || (f === "open" ? apOpen(a) : f === "overdue" ? apOverdue(a) : f === "signoff" ? ["shared","acknowledged"].includes(a.status) : a.kind === f)).sort((a, b) => a.due.localeCompare(b.due));
+    const cnt = k => apAll().filter(k).length, ns = apNoSupervisor();
+    const probEmps = activeE().filter(e => apOf(`${e.id}-prob-initial`) && apAll().some(a => a.empId === e.id && a.kind === "probation" && apOpen(a)));
+    body = `<div class="card-b stack"><div class="grid kpis k4">${kpi("Open reviews", cnt(apOpen), "scheduled, draft or waiting")}${kpi("Overdue", cnt(apOverdue), "past due, not shared yet", cnt(apOverdue) ? "warn" : "")}${kpi("Waiting sign-off", cnt(a => ["shared","acknowledged"].includes(a.status)), "shared with the employee")}${kpi("Signed off", cnt(a => a.status === "closed"), "this year and earlier")}</div>
+      ${ns.length ? `<div class="note warn">${ic("alert")}<div><b>No supervisor to assign:</b> ${ns.map(id => `<button class="btn link" type="button" data-act="open-emp" data-id="${id}">${esc(nm(id))}</button>`).join(", ")}. Set their direct supervisor so their reviews can be scheduled.</div></div>` : ""}
+      <div class="row" style="justify-content:space-between"><div class="seg" role="group">${[["open","Open"],["overdue","Overdue"],["signoff","Waiting sign-off"],["probation","Probation"],["midterm","Mid-contract"],["renewal","Pre-renewal"],["all","All"]].map(([k, l]) => `<button type="button" data-act="ap-filter" data-v="${k}" aria-pressed="${f === k}">${l}</button>`).join("")}</div>
+        <button class="btn" type="button" data-act="ap-plan">${ic("history")}Schedule due reviews now</button></div></div>
+      ${probEmps.length ? `<div class="card-h" style="border-top:1px solid var(--line)"><h2>Probation pipeline</h2><span class="tag">${probEmps.length}</span></div><div class="card-b stack">${probEmps.map(e => `<div class="ap-prow">${who(e.id, `${e.position} · joined ${fmt(e.joinDate)}`)}${apProbationPipe(e.id)}</div>`).join("")}</div>` : ""}
+      <div class="card-h" style="border-top:1px solid var(--line)"><h2>Reviews</h2><span class="tag">${all.length}</span></div>${apTable(all, {empty:"No reviews match this filter."})}`;
+  }
+  return {tab, tabs, body};
+}
+
+/* review form (modal) */
+function mAppr(){
+  const a = apOf(S.modal.id); if(!a) return `<div class="md-b">This review isn't available.</div>`;
+  const e = emp(a.empId) || {}, k = "ap-" + a.id, can = apCanEdit(a), items = apItems(a), key = apKey(a), dec = AP_DECISIONS[key] || [];
+  const v = (n, d) => dv(k, n, a[n] ?? d), sc = Object.fromEntries(items.map(([id]) => [id, Number(dv(k, "s:" + id, a.scores?.[id] || 0))]));
+  const score = apScore(items, sc), band = apBand(score), att = apAttendance(a), init = a.kind === "probation" && a.stage !== "initial" ? apOf(`${a.empId}-prob-initial`) : null;
+  const ro = can ? "" : "disabled", hr = isMgmt() && ["shared","acknowledged"].includes(a.status), mineAck = a.empId === S.me && a.status === "shared";
+  const txt = (n, l, ph, hint) => `<label class="f"><span>${l}</span><textarea name="${n}" ${ro} placeholder="${esc(ph || "")}">${esc(v(n, ""))}</textarea>${hint ? `<small>${hint}</small>` : ""}</label>`;
+  return `<form data-draft="${k}" data-submit="noop" novalidate><div class="md-h">${av(a.empId)}<h2>${esc(e.name || "")}<br><span class="small muted" style="font-family:var(--f-body);font-weight:500">${esc(apTitle(a))} · due ${fmt(a.due)} · reviewer ${esc(a.reviewerId ? nm(a.reviewerId) : "—")}</span></h2><button class="ib plain" type="button" data-act="close" aria-label="Close">${ic("x")}</button></div>
+  <div class="md-b stack">${apStepper(a)}
+    <div class="kv ap-kv"><div><span>Position</span>${esc(e.position || "—")} · ${esc(jobOf(e))}</div><div><span>Joined</span>${fmt(e.joinDate)}${e.contract?.type ? ` · ${esc(e.contract.type)}${e.contract.end ? ` until ${fmt(e.contract.end)}` : ""}` : ""}</div>
+      ${att ? `<div><span>Attendance ${a.kind === "probation" ? "since joining" : "last 6 months"}</span>${att.rate}% · ${att.present} present, ${att.late} late, <b${att.absent ? ` style="color:var(--bad)"` : ""}>${att.absent} absent</b>, ${att.leave} leave, ${att.wfh} WFH</div>` : ""}</div>
+    ${a.kind === "probation" && a.stage === "initial" ? `<h3 class="sub">Onboarding activities</h3><div class="ap-acts">${AP_ACTS.map(([id, l]) => `<div class="ap-act"><b>${esc(l)}</b><select name="act:${id}" ${ro}>${AP_ACT_ST.map(([s, sl]) => `<option value="${s}" ${dv(k, "act:" + id, a.acts?.[id]?.st || "todo") === s ? "selected" : ""}>${sl}</option>`).join("")}</select><input type="text" name="actn:${id}" ${ro} placeholder="Note (optional)" value="${esc(dv(k, "actn:" + id, a.acts?.[id]?.note || ""))}"></div>`).join("")}</div>
+      ${txt("objectives", "Probation objectives (what success looks like by the final review)", "e.g. Handle 15 client cases independently by week 8; learn the CRM and visa SOP.", "These objectives are shown again in the Mid and Final reviews.")}`
+    : `${init?.objectives ? `<div class="note">${ic("info")}<div><b>Probation objectives agreed at the start:</b><br>${esc(init.objectives).replace(/\n/g, "<br>")}</div></div>` : ""}
+      <h3 class="sub">${a.kind === "probation" ? "Competencies" : "KPI scorecard"} <span class="small muted" style="font-weight:400">1 = ${AP_SCALE[0][1]} · 3 = ${AP_SCALE[2][1]} · 5 = ${AP_SCALE[4][1]}</span></h3>
+      <div class="ap-kpis">${items.map(([id, l, w, h]) => `<div class="ap-kpi"><div><b>${esc(l)}</b>${a.kind !== "probation" ? ` <span class="tag">${w}%</span>` : ""}<small>${esc(h)}</small></div>
+        <div class="score" role="radiogroup" aria-label="${esc(l)}">${[1,2,3,4,5].map(n => `<label title="${AP_SCALE[n-1][1]}"><input type="radio" name="s:${id}" value="${n}" ${sc[id] === n ? "checked" : ""} ${ro}><span>${n}</span></label>`).join("")}</div>
+        <input type="text" name="kn:${id}" ${ro} placeholder="Evidence / example (optional)" value="${esc(dv(k, "kn:" + id, a.kpiNotes?.[id] || ""))}"></div>`).join("")}
+        <div class="ap-total"><span>${a.kind === "probation" ? "Average" : "Weighted score"}</span><b id="ap-score">${score ? score.toFixed(2) : "—"}</b><span id="ap-band">${band ? `<span class="pill p-info">${band[0]} · ${esc(band[1])}</span>` : ""}</span></div></div>
+      ${a.kind === "midterm" ? `<div class="note">${ic("info")}<div><b>Salary guide by rating:</b> A 8–10% · B 5–7% · C 3–4% · D 0% with a development plan · E 0% with a PIP. ${band ? `This score suggests <b>${esc(band[2])}</b>.` : ""} The final increase is approved by HRD / GM.</div></div>` : ""}
+      ${txt("strengths", "Strengths", "What went well, with examples")}${txt("improvements", "Areas to improve", "Be specific — what should change, and how")}
+      ${txt("goals", a.kind === "probation" ? "Plan until the next review" : "Goals & development plan for the next period", "Measurable goals, training, support from the supervisor")}`}
+    <div class="fields"><label class="f"><span>${a.kind === "probation" && a.stage === "initial" ? "Status after onboarding" : "Recommendation"}</span><select name="decision" ${ro}><option value="">— choose —</option>${dec.map(d => `<option ${v("decision", "") === d ? "selected" : ""}>${esc(d)}</option>`).join("")}</select></label>
+      ${a.kind === "midterm" ? `<label class="f"><span>Proposed increase (%)</span><input type="number" name="raisePct" min="0" max="50" step="0.5" ${ro} value="${esc(v("raisePct", ""))}"></label>` : ""}
+      ${a.kind === "renewal" ? `<label class="f"><span>Renewal length</span><select name="renewMonths" ${ro}>${["","6","12","24"].map(m => `<option value="${m}" ${String(v("renewMonths", "")) === m ? "selected" : ""}>${m ? m + " months" : "—"}</option>`).join("")}</select></label>` : ""}
+      <label class="f"><span>Session date</span><input type="date" name="sessionDate" ${ro} value="${esc(v("sessionDate", ""))}"><small>The 1:1 meeting where you go through this with ${esc(first(a.empId))}.</small></label></div>
+    ${txt("sessionNotes", "Session notes", "What was discussed and agreed in the meeting")}
+    ${a.ackAt || a.employeeComment ? `<div class="note ${a.ackAt ? "" : "warn"}">${ic(a.ackAt ? "check" : "info")}<div><b>${esc(first(a.empId))} ${a.ackAt ? `acknowledged on ${fmt(a.ackAt.slice(0, 10))}` : "commented"}.</b>${a.employeeComment ? `<br>“${esc(a.employeeComment)}”` : ""}</div></div>` : ""}
+    ${mineAck ? `<div class="card" style="border-color:var(--pri)"><div class="card-b stack"><b>Your acknowledgement</b><p class="small muted" style="margin:0">Confirm that ${esc(first(a.reviewerId))} went through this review with you. Acknowledging means you received it — not that you agree. Add your own view if you like.</p>
+      <label class="f"><span>Your comment (optional)</span><textarea name="employeeComment">${esc(dv(k, "employeeComment", ""))}</textarea></label><div><button class="btn pri" type="button" data-act="ap-ack" data-id="${esc(a.id)}">${ic("check")}I've received this review</button></div></div></div>` : ""}
+    ${a.status === "closed" ? `<div class="note">${ic("shield")}<div><b>Signed off by ${esc(nm(a.hrBy))} on ${fmt((a.hrAt || "").slice(0, 10))}</b> — final decision: ${esc(a.hrDecision || a.decision || "—")}${a.hrNote ? `<br>${esc(a.hrNote)}` : ""}</div></div>` : ""}
+    ${hr ? `<div class="card" style="border-color:var(--warn,#b26205)"><div class="card-b stack"><b>HR sign-off</b>${a.status === "shared" ? `<p class="small muted" style="margin:0">${esc(first(a.empId))} hasn't acknowledged yet (shared ${fmt((a.sharedAt || "").slice(0, 10))}). You can still sign off.</p>` : ""}
+      <div class="fields"><label class="f"><span>Final decision</span><select name="hrDecision">${dec.map(d => `<option ${dv(k, "hrDecision", a.decision) === d ? "selected" : ""}>${esc(d)}</option>`).join("")}</select></label>
+        ${a.kind === "midterm" ? `<label class="f"><span>Approved increase (%)</span><input type="number" name="hrRaise" min="0" max="50" step="0.5" value="${esc(dv(k, "hrRaise", a.raisePct ?? ""))}"></label>` : ""}</div>
+      <label class="f"><span>HR note</span><textarea name="hrNote" placeholder="e.g. Contract renewal letter to be issued by 15 Nov.">${esc(dv(k, "hrNote", ""))}</textarea></label>
+      <div><button class="btn pri" type="button" data-act="ap-sign" data-id="${esc(a.id)}">${ic("shield")}Sign off & close</button></div></div></div>` : ""}
+    ${isMgmt() && apOpen(a) ? `<details><summary class="small" style="cursor:pointer">Reassign or cancel</summary><div class="row" style="margin-top:8px"><select id="ap-reviewer">${activeE().filter(x => x.id !== a.empId).map(x => `<option value="${x.id}" ${x.id === a.reviewerId ? "selected" : ""}>${esc(x.name)} · ${esc(x.position)}</option>`).join("")}</select><button class="btn sm" type="button" data-act="ap-reassign" data-id="${esc(a.id)}">Reassign</button><button class="btn sm" type="button" data-act="ap-cancel" data-id="${esc(a.id)}">${S.ui.apCancel === a.id ? "Tap again to cancel" : "Cancel review"}</button></div></details>` : ""}
+    ${(a.history || []).length ? `<details><summary class="small" style="cursor:pointer">History (${a.history.length})</summary><ul class="tl" style="padding:8px 0 0">${[...a.history].reverse().map(h => `<li><div class="meta"><span class="tag">${esc(h.action)}</span><span>${fmt(String(h.at).slice(0, 10))}</span><span>${esc(h.by ? nm(h.by) : "HRM")}</span></div>${h.note ? `<p>${esc(h.note)}</p>` : ""}</li>`).join("")}</ul></details>` : ""}
+    ${S.ui.apErr ? `<ul class="errs"><li>${esc(S.ui.apErr)}</li></ul>` : ""}
+  </div>
+  <div class="md-f"><button class="btn" type="button" data-act="close">Close</button>${can ? `<button class="btn" type="button" data-act="ap-save" data-id="${esc(a.id)}">Save draft</button><button class="btn pri" type="button" data-act="ap-share" data-id="${esc(a.id)}">${ic("users")}Share in session</button>` : ""}</div></form>`;
+}
+function apCollect(a){
+  const k = "ap-" + a.id, g = (n, d) => dv(k, n, a[n] ?? d), items = apItems(a), x = clone(a);
+  if(a.kind === "probation" && a.stage === "initial"){ x.acts = Object.fromEntries(AP_ACTS.map(([id]) => [id, {st:dv(k, "act:" + id, a.acts?.[id]?.st || "todo"), note:(dv(k, "actn:" + id, a.acts?.[id]?.note || "") || "").trim().slice(0, 300)}])); x.objectives = String(g("objectives", "")).trim().slice(0, 3000); }
+  else {
+    x.scores = Object.fromEntries(items.map(([id]) => [id, Number(dv(k, "s:" + id, a.scores?.[id] || 0)) || 0]));
+    x.kpiNotes = Object.fromEntries(items.map(([id]) => [id, String(dv(k, "kn:" + id, a.kpiNotes?.[id] || "")).trim().slice(0, 300)]));
+    x.overall = apScore(items, x.scores) || null; const b = apBand(x.overall); x.band = b ? `${b[0]} · ${b[1]}` : "";
+    for(const n of ["strengths","improvements","goals"]) x[n] = String(g(n, "")).trim().slice(0, 3000);
+  }
+  x.decision = g("decision", ""); x.sessionDate = g("sessionDate", ""); x.sessionNotes = String(g("sessionNotes", "")).trim().slice(0, 3000);
+  if(a.kind === "midterm") x.raisePct = g("raisePct", "") === "" ? null : Number(g("raisePct", ""));
+  if(a.kind === "renewal") x.renewMonths = g("renewMonths", "") ? Number(g("renewMonths", "")) : null;
+  x.updatedAt = new Date().toISOString(); x.history = (a.history || []).slice(-50);
+  return x;
+}
+async function apSave(id, share){
+  const a = apOf(id); if(!apCanEdit(a)) return;
+  const x = apCollect(a), by = S.realEmpId || S.me, now = x.updatedAt;
+  if(share){
+    const miss = a.kind === "probation" && a.stage === "initial" ? (!x.objectives ? "Write the probation objectives." : null)
+      : apItems(a).some(([k]) => !x.scores[k]) ? "Score every item (1–5)." : !x.strengths || !x.improvements ? "Write the strengths and areas to improve." : null;
+    const err = miss || (!x.decision ? "Choose the recommendation." : !x.sessionDate ? "Enter the session date — share it during or right after the meeting." : x.sessionDate > today() ? "The session date can't be in the future." : null);
+    if(err){ S.ui.apErr = err; renderModal(); return; }
+    x.status = "shared"; x.sharedAt = now; x.history.push({at:now, by, action:"shared in session", note:`Session ${x.sessionDate}${x.decision ? " · " + x.decision : ""}`});
+  } else { if(x.status === "scheduled"){ x.status = "draft"; x.history.push({at:now, by, action:"started", note:""}); } }
+  S.ui.apErr = "";
+  const ok = await run(async () => {
+    await store.put("appraisals", x);
+    if(share){
+      await notify(a.empId, `Your ${apTitle(a).toLowerCase()} is ready`, `Shared by ${nm(by)} after your session · please acknowledge it`, "reviews", a.id, "appraisal_shared",
+        {heading:`Your ${apTitle(a)} was shared with you`, intro:`${nm(by)} went through your review with you on ${fmt(x.sessionDate)}. Please open it in the HRM and confirm you received it — you can add your own comment.`, rows:[["Review", apTitle(a)], ["Session", fmt(x.sessionDate)]], tone:"info", cta:{label:"Open my review", go:"reviews", ref:a.id}});
+      for(const h of activeE().filter(z => z.role === "hrd" && z.id !== by)) await notify(h.id, `Review shared: ${nm(a.empId)}`, `${apTitle(a)} · ${x.decision} · waiting sign-off`, "reviews", a.id, "appraisal_ack");
+      audit("review_shared", nm(a.empId), apTitle(a));
+    }
+  }, share ? `Shared with ${first(a.empId)}. They'll be asked to acknowledge it.` : "Draft saved.");
+  if(ok){ delete S.drafts["ap-" + id]; if(share){ S.modal = null; } renderModal(); render(); }
+}
+async function apAck(id){
+  const a = apOf(id); if(!a || a.empId !== S.me || a.status !== "shared") return;
+  const comment = String(dv("ap-" + id, "employeeComment", "") || "").trim().slice(0, 2000);
+  const ok = await run(async () => {
+    if(S.mode === "db"){ const r = await window.HRM.apprAck(id, comment); if(r !== "ok") throw new Error(r === "not_shared" ? "This review isn't waiting for your acknowledgement." : "Review not found."); }
+    else { const now = new Date().toISOString(); await store.put("appraisals", Object.assign(clone(a), {status:"acknowledged", ackAt:now, employeeComment:comment, history:(a.history||[]).concat([{at:now, by:S.me, action:"acknowledged", note:comment.slice(0, 300)}])})); }
+    await notify(a.reviewerId, `${nm(S.me)} acknowledged the review`, `${apTitle(a)}${comment ? ` · “${comment.slice(0, 80)}”` : ""}`, "reviews", a.id, "appraisal_ack", {heading:`${nm(S.me)} acknowledged the review`, intro:`${apTitle(a)}${comment ? `\n\nTheir comment: “${comment}”` : ""}`, cta:{label:"Open the review", go:"reviews", ref:a.id}});
+    for(const h of activeE().filter(z => z.role === "hrd")) await notify(h.id, `Ready to sign off: ${nm(S.me)}`, apTitle(a), "reviews", a.id, "appraisal_ack");
+  }, "Thank you — your acknowledgement was recorded.");
+  if(ok){ S.modal = null; renderModal(); render(); }
+}
+async function apSign(id){
+  const a = apOf(id); if(!a || !isMgmt() || !["shared","acknowledged"].includes(a.status)) return;
+  const k = "ap-" + id, now = new Date().toISOString(), by = S.realEmpId || S.me, e = emp(a.empId);
+  const x = Object.assign(clone(a), {status:"closed", hrDecision:dv(k, "hrDecision", a.decision), hrNote:String(dv(k, "hrNote", "") || "").trim().slice(0, 2000), hrBy:by, hrAt:now, closedAt:now});
+  if(a.kind === "midterm"){ const r = dv(k, "hrRaise", a.raisePct ?? ""); x.hrRaise = r === "" || r == null ? null : Number(r); }
+  x.history = (a.history || []).concat([{at:now, by, action:"signed off", note:x.hrDecision + (x.hrRaise != null && a.kind === "midterm" ? ` · ${x.hrRaise}%` : "")}]);
+  const d = x.hrDecision || "", fu = [];
+  if(a.kind === "probation" && a.stage === "final") fu.push(/^Not pass/.test(d) ? [`End of probation letter — ${e?.name}`, addMonths(e?.joinDate || today(), 3)] : [`Issue employment contract — ${e?.name} (passed probation)`, addMonths(e?.joinDate || today(), 3)]);
+  if(a.kind === "renewal") fu.push(/^Do not/.test(d) ? [`Non-renewal notice — ${e?.name}`, addDays(e?.contract?.end || today(), -30)] : [`Prepare ${/permanent/i.test(d) ? "PKWTT" : "renewal"} contract — ${e?.name}${x.renewMonths ? ` (${x.renewMonths} months)` : ""}`, addDays(e?.contract?.end || today(), -30)]);
+  if(a.kind === "midterm" && x.hrRaise) fu.push([`Process salary increase ${x.hrRaise}% — ${e?.name}`, addDays(today(), 14)]);
+  const ok = await run(async () => {
+    await store.put("appraisals", x);
+    for(const [title, date] of fu) await store.put("reminders", {id:uid("m"), title, date:[date, today()].sort()[1], type:"contract", empId:a.empId, audience:["hrd"], note:`From ${apTitle(a)} signed off by ${nm(by)}.`, done:false, createdBy:by});
+    for(const to of [a.empId, a.reviewerId]) if(to && to !== by) await notify(to, `${apTitle(a)} signed off`, `${to === a.empId ? "Your review" : nm(a.empId)} · ${x.hrDecision}`, "reviews", a.id, "appraisal_closed",
+      {heading:`${apTitle(a)} — signed off`, intro:`HR signed off ${to === a.empId ? "your" : nm(a.empId) + "'s"} ${apTitle(a).toLowerCase()}.`, rows:[["Final decision", x.hrDecision], ...(x.hrNote ? [["HR note", x.hrNote]] : [])], tone:/Not pass|Do not/.test(d) ? "warn" : "ok", cta:{label:"Open the review", go:"reviews", ref:a.id}});
+    audit("review_signed_off", nm(a.empId), `${apTitle(a)} · ${x.hrDecision}`);
+  }, `Signed off.${fu.length ? ` ${fu.length} follow-up reminder(s) added for HR.` : ""}`);
+  if(ok){ S.modal = null; delete S.drafts[k]; renderModal(); render(); }
+}
+async function apReassign(id){
+  const a = apOf(id), to = document.getElementById("ap-reviewer")?.value; if(!a || !isMgmt() || !to || to === a.reviewerId) return;
+  const now = new Date().toISOString(), x = Object.assign(clone(a), {reviewerId:to, history:(a.history||[]).concat([{at:now, by:S.realEmpId || S.me, action:"reassigned", note:`${nm(a.reviewerId)} → ${nm(to)}`}])});
+  await run(async () => { await store.put("appraisals", x);
+    await notify(to, `${apTitle(a)}: ${nm(a.empId)}`, `Assigned to you · due ${fmt(a.due)}`, "reviews", a.id, "appraisal_due", {heading:"A review was assigned to you", intro:`${nm(S.me)} assigned you the ${apTitle(a).toLowerCase()} for ${nm(a.empId)}.`, rows:[["Due", fmt(a.due)]], cta:{label:"Open the review", go:"reviews", ref:a.id}}); }, `Reassigned to ${nm(to)}.`);
+  renderModal();
+}
+async function apCancel(id){
+  const a = apOf(id); if(!a || !isMgmt()) return;
+  if(S.ui.apCancel !== id){ S.ui.apCancel = id; renderModal(); setTimeout(() => { if(S.ui.apCancel === id){ S.ui.apCancel = null; renderModal(); } }, 4000); return; }
+  S.ui.apCancel = null; const now = new Date().toISOString(), x = Object.assign(clone(a), {status:"cancelled", history:(a.history||[]).concat([{at:now, by:S.realEmpId || S.me, action:"cancelled", note:""}])});
+  await run(async () => { await store.put("appraisals", x); audit("review_cancelled", nm(a.empId), apTitle(a)); }, "Review cancelled."); S.modal = null; renderModal(); render();
+}
+function apLiveScore(k){
+  const a = apOf(k.slice(3)); if(!a) return; const items = apItems(a), sc = Object.fromEntries(items.map(([id]) => [id, Number(dv(k, "s:" + id, a.scores?.[id] || 0))]));
+  const s = apScore(items, sc), b = apBand(s), el = document.getElementById("ap-score"), bl = document.getElementById("ap-band");
+  if(el) el.textContent = s ? s.toFixed(2) : "—"; if(bl) bl.innerHTML = b ? `<span class="pill p-info">${b[0]} · ${esc(b[1])}</span>` : "";
 }
 
 /* ---------- attendance ---------- */
@@ -2786,8 +3084,8 @@ async function setCfg(path, value){
 function renderModal(){
   const el = document.getElementById("modal");
   if(!S.modal){ el.innerHTML = ""; return; }
-  const inner = {req:() => mReq(S.modal.id), task:mTask, review:mReview, cand:mCand, emp:mEmp, contract:mContract, rem:mRem, quota:mQuota, ann:mAnn, mfa:mMfa}[S.modal.kind]?.() || "";
-  el.innerHTML = `<div class="mb" data-act="backdrop"><div class="md ${S.modal.kind==="review"||S.modal.kind==="emp"?"wide":""}" role="dialog" aria-modal="true">${inner}</div></div>`;
+  const inner = {req:() => mReq(S.modal.id), task:mTask, review:mReview, cand:mCand, emp:mEmp, contract:mContract, rem:mRem, quota:mQuota, ann:mAnn, mfa:mMfa, appr:mAppr}[S.modal.kind]?.() || "";
+  el.innerHTML = `<div class="mb" data-act="backdrop"><div class="md ${S.modal.kind==="review"||S.modal.kind==="emp"||S.modal.kind==="appr"?"wide":""}" role="dialog" aria-modal="true">${inner}</div></div>`;
 }
 async function wipeSample(){
   const gone = new Set(S.R.employees.filter(e => e.example && !e.system).map(e => e.id));
@@ -3395,6 +3693,16 @@ document.addEventListener("click", async ev => {
     case "gcal-backfill": if(!isHR() || S.ui.gcalBusy) return; S.ui.gcalBusy = true; render();
       try { const r = await window.HRM.gcal("backfill"); const n = Object.values(r.synced || {}).reduce((a, b) => a + b, 0); toast(`${n} approved request(s) are on Google Calendar${r.failed ? `, ${r.failed} failed` : ""}.`); audit("gcal_backfill", `${n} synced`, r.failed ? `${r.failed} failed` : ""); }
       catch(e){ toast("Couldn't sync: " + (e?.message || "error")); } S.ui.gcalBusy = false; render(); return;
+    case "ap-open": S.ui.apErr = ""; S.modal = {kind:"appr", id}; renderModal(); return;
+    case "ap-save": await apSave(id, false); return;
+    case "ap-share": await apSave(id, true); return;
+    case "ap-ack": await apAck(id); return;
+    case "ap-sign": await apSign(id); return;
+    case "ap-reassign": await apReassign(id); return;
+    case "ap-cancel": await apCancel(id); return;
+    case "ap-filter": S.ui.apf = v; render(); return;
+    case "aptab": S.ui.aptab = v; render(); return;
+    case "ap-plan": if(isMgmt()) await apEnsure(true); render(); return;
     case "att-suggest": if(S.ui.attParse){ S.ui.attParse.assign[id] = v; render(); } return;
     case "paytab": S.ui.paytab = v; if(v === "settings") S.ui.payImgLoaded = false; render(); return;
     case "pay-tpl": if(isPayroll()) await payTemplate(); return;
@@ -3488,6 +3796,7 @@ document.addEventListener("change", async ev => {
   const dk = f.dataset.draft;
   if(dk === "apply" && t.name === "type"){ render(); return; }
   if(dk === "apply") { document.getElementById("summary").innerHTML = applySummary(); return; }
+  if(dk.startsWith("ap-") && t.type === "radio"){ apLiveScore(dk); return; }
   if(dk.startsWith("rv-") && t.type === "radio"){ const crit = cfg().criteria||[], vals = crit.map(c => Number(dv(dk,"s:"+c,0))).filter(Boolean); document.getElementById("rv-avg").textContent = vals.length ? (vals.reduce((a,b)=>a+b,0)/vals.length).toFixed(1) : "—"; return; }
   if(t.dataset.rerender || (dk === "task" && t.name === "supervisorId")){ if(dk === "task") delete S.drafts.task.members; renderModal(); return; }
   if(dk.startsWith("emp-") && (t.name === "status" || t.name === "gender")){ renderModal(); return; }
@@ -3548,7 +3857,7 @@ async function seed(){
     await S.db.collection("config").doc("main").set(config); audit("sample_data_loaded", "", "");
   }, "Sample data loaded.");
 }
-function startDemo(){ const d = sample(); S.mode = "demo"; for(const c of COLS) S.R[c] = d[c] || []; S.config = d.config; rebuild(); pickMe(); render(); }
+function startDemo(){ const d = sample(); S.mode = "demo"; for(const c of COLS) S.R[c] = d[c] || []; S.config = d.config; rebuild(); pickMe(); render(); setTimeout(apEnsure, 300); }
 function resolveMe(){
   if(S.mode !== "db") return;
   const linked = S.R.employees.find(e => e.userId && e.userId === S.uid);
@@ -3577,6 +3886,7 @@ function openDeep(){
   if(d.view === "approvals" || d.view === "myrequests"){ const r = S.D.requests.find(x => x.id === d.ref); go(d.view === "approvals" && isLead() ? "approvals" : "myrequests"); if(r){ S.modal = {kind:"req", id:r.id}; renderModal(); } return; }
   if(d.view === "profile") return go("profile", d.ref ? {id:d.ref} : {});
   if(d.view === "announcements"){ if(d.ref){ S.ui["ann-"+d.ref] = true; markAnnRead([d.ref]); } return go("announcements"); }
+  if(d.view === "reviews" && d.ref && apOf(d.ref)){ const a = apOf(d.ref); if(a.empId === S.me && !isLead()) go("profile", {id:S.me, tab:"performance"}); else go("reviews"); S.modal = {kind:"appr", id:a.id}; renderModal(); return; }
   if(["reviews","reminders","directory","dashboard","payslips"].includes(d.view)) return go(d.view);
 }
 function logErr(msg){ if(!msg || S.errors.length > 20) return; S.errors.push(msg); if(S.errors.length <= 5) audit("client_error", String(msg).slice(0,160), APP_VERSION); }
@@ -3598,7 +3908,7 @@ async function boot(){
   const tick = () => {
     if(!S.loadedAll && CORE_COLS.every(c => S.loaded[c]) && S.loaded.config) S.loadedAll = true;
     rebuild(); resolveMe();
-    if(S.loadedAll){ if(!S.realEmpId) ownerBootstrap(); render(); scheduleSync(); pruneOwnSubs(); if(DEEP && S.me) openDeep(); }
+    if(S.loadedAll){ if(!S.realEmpId) ownerBootstrap(); render(); scheduleSync(); pruneOwnSubs(); if(DEEP && S.me) openDeep(); if(!S.ui.apPlanned && S.loaded.appraisals){ S.ui.apPlanned = true; setTimeout(apEnsure, 3000); } }
   };
   for(const c of SUB_COLS) db.collection(c).onSnapshot(snap => { S.R[c] = snap.docs.map(x => Object.assign({id:x.id}, x.data())); if(!snap.metadata.fromCache) S.loaded[c] = true; tick(); }, fail);
   db.collection("config").doc("main").onSnapshot(snap => {
