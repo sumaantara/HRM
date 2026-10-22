@@ -491,6 +491,14 @@ body.auth-on .app{visibility:hidden}
 .ap-total{display:flex;align-items:center;gap:12px;justify-content:flex-end;padding:6px 4px}.ap-total b{font-size:1.8rem;font-family:var(--f-head)}
 .ap-acts{display:grid;gap:8px}.ap-act{display:grid;grid-template-columns:minmax(220px,1.4fr) 160px 1fr;gap:10px;align-items:center;padding:8px 12px;border:1px solid var(--line);border-radius:12px}
 @media (max-width:760px){.ap-act{grid-template-columns:1fr}}
+.f.req>span:first-child::after{content:" *";color:var(--bad,#c2352b);font-weight:700}
+.inv{border-color:var(--bad,#c2352b)!important;box-shadow:0 0 0 3px color-mix(in srgb,var(--bad,#c2352b) 18%,transparent)!important;animation:hrm-shake .42s cubic-bezier(.36,.07,.19,.97) both}
+.f.inv-l>span:first-child{color:var(--bad,#c2352b)}
+@keyframes hrm-shake{10%,90%{transform:translateX(-1px)}20%,80%{transform:translateX(3px)}30%,50%,70%{transform:translateX(-6px)}40%,60%{transform:translateX(6px)}}
+@media (prefers-reduced-motion:reduce){.inv{animation:none}}
+.mconf{position:fixed;inset:0;display:grid;place-items:center;background:rgba(10,14,30,.35);z-index:5;padding:16px}
+.mconf-c{background:var(--card,#fff);border:1px solid var(--line);border-radius:16px;padding:22px;max-width:420px;width:100%;box-shadow:0 20px 50px rgba(0,0,0,.25);display:grid;gap:10px}
+.mconf-c h3{margin:0}.mconf-c p{margin:0}
 .pay-img{height:96px;border:1px dashed var(--line);border-radius:10px;display:flex;align-items:center;justify-content:center;padding:8px;background:repeating-conic-gradient(var(--line) 0 25%,transparent 0 50%) 0 0/14px 14px;margin:4px 0 8px}.pay-img img{max-height:100%;max-width:100%;object-fit:contain}
 </style>
 </head>

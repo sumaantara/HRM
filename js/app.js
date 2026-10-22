@@ -294,7 +294,7 @@ const dv = (k, n, d) => (S.drafts[k] && n in S.drafts[k]) ? S.drafts[k][n] : d;
    rd/<uid>, ph/<uid>   per-person read receipts and self-uploaded profile photo
    audit/<uid>/m/<yyyy-mm>  each person's own monthly audit trail
    requests, notifs, counters   shared working data (Contributors write) */
-const APP_VERSION = "4.0.0", SCHEMA = 2;
+const APP_VERSION = "4.1.0", SCHEMA = 2;
 const PRIVATE_FIELDS = ["phone","gender","birthDate","address","exitReason","contract","contracts","notes","quotaLog"];
 const SUB_COLS = ["employees","private","requests","candidates","tasks","reviews","reminders","notifs","announcements","attendance","attImports","backups","dec","links","rd","ph","sub","payslips","payruns","appraisals"];
 const CORE_COLS = ["employees","requests","tasks","notifs","announcements","attendance"];
@@ -1444,23 +1444,32 @@ function vReviewTasks(){
   ${mine.length ? `<h2>Assigned to me</h2>${mine.map(t => taskRow(t, false)).join("")}` : (!isMgmt() ? `<section class="card"><div class="empty"><b>No review tasks</b>HRD will assign performance reviews for your team here.</div></section>` : "")}
   ${isMgmt() ? `<h2>All review tasks</h2>${all.length ? all.map(t => taskRow(t, true)).join("") : `<section class="card"><div class="empty"><b>No review tasks yet</b>Assign the first one to a supervisor.</div></section>`}` : ""}`;
 }
+/* ad-hoc review tasks: choose the type first; title and period are suggested from it until the user edits them */
+const TASK_KINDS = [["Quarterly","progress check for the quarter"],["Annual","full-year performance"],["Project","after a project or assignment"],["Probation","extra probation check (the 3 standard ones are automatic)"],["Contract renewal","extra renewal check (the standard one is automatic)"],["Other","anything else"]];
+function taskVals(pre){
+  const d = S.drafts.task || {}, kind = dv("task","kind",""), y = today().slice(0,4), q = Math.floor((Number(today().slice(5,7)) - 1) / 3) + 1;
+  const autoP = {Quarterly:`Q${q} ${y}`, Annual:y, Probation:`Probation ${y}`, "Contract renewal":`Contract ${y}`}[kind] || "";
+  const period = d._pEdited ? dv("task","period","") : autoP;
+  const autoT = !kind ? "" : `${kind === "Other" ? "Performance review" : kind + " review"}${period ? " — " + period : ""}${pre ? " — " + pre.name : ""}`;
+  return {kind, period, title: d._tEdited ? dv("task","title","") : autoT};
+}
 function mTask(){
   const k = "task", sups = E().filter(e => reports(e.id).length && e.status !== "Resigned");
   const pre = S.modal.emp ? emp(S.modal.emp) : null;
   const sid = dv(k,"supervisorId", pre?.supervisorId || sups[0]?.id || ""), team = reports(sid);
   const members = dv(k,"members", pre ? [pre.id] : team.map(e => e.id)).filter(id => team.some(x => x.id === id));
-  const s = emp(sid);
+  const s = emp(sid), tv = taskVals(pre);
   return `<form data-draft="${k}" data-submit="task" novalidate><div class="md-h"><span class="tile c4">${ic("star")}</span><h2>Assign review task</h2><button class="ib plain" type="button" data-act="close" aria-label="Close">${ic("x")}</button></div>
   <div class="md-b"><div class="fields">
-    <label class="f full"><span>Title</span><input type="text" name="title" value="${esc(dv(k,"title", pre ? `Probation review — ${pre.name}` : `Q4 ${new Date().getFullYear()} performance review`))}"></label>
-    <label class="f"><span>Review type</span><select name="kind">${["Quarterly","Probation","Annual","Contract renewal"].map(x => `<option ${dv(k,"kind",pre?.status==="Probation"?"Probation":"Quarterly")===x?"selected":""}>${x}</option>`).join("")}</select></label>
-    <label class="f"><span>Period</span><input type="text" name="period" value="${esc(dv(k,"period", pre?.status==="Probation" ? `Probation ${new Date().getFullYear()}` : `Q4 ${new Date().getFullYear()}`))}"></label>
+    <label class="f full"><span>Review type</span><select name="kind" data-rerender="1"><option value="">— Choose the type of review —</option>${TASK_KINDS.map(([x, h]) => `<option value="${x}" ${tv.kind===x?"selected":""}>${x} — ${h}</option>`).join("")}</select></label>
+    <label class="f full"><span>Title</span><input type="text" name="title" value="${esc(tv.title)}" placeholder="${tv.kind ? "" : "Filled in automatically after you choose the type"}"><small>Suggested from the type and period — you can change it.</small></label>
+    <label class="f"><span>Period</span><input type="text" name="period" value="${esc(tv.period)}" placeholder="e.g. Q4 2026"></label>
     <label class="f"><span>Supervisor (reviewer)</span><select name="supervisorId" data-rerender="1">${sups.map(e => `<option value="${e.id}" ${sid===e.id?"selected":""}>${esc(e.name)} — ${esc(e.dept)}</option>`).join("")}</select></label>
     <label class="f"><span>Due date</span><input type="date" name="due" value="${esc(dv(k,"due",addDays(today(),14)))}"></label></div>
     <fieldset class="f" style="border:0;padding:0;margin:0"><legend style="font-size:.8rem;font-weight:600;color:var(--ink2);margin-bottom:6px">Team members to review</legend>
       <div class="stack" style="gap:8px">${team.length ? team.map(e => `<label class="chk"><input type="checkbox" name="members" data-multi="1" value="${e.id}" ${members.includes(e.id)?"checked":""}><span>${esc(e.name)} <span class="muted">· ${esc(e.position)}${e.status==="Probation"?" · probation":""}</span></span></label>`).join("") : `<span class="muted">This supervisor has no direct reports.</span>`}</div></fieldset>
     <label class="f"><span>Message to supervisor</span><textarea name="message" placeholder="e.g. Please focus on goals for next quarter.">${esc(dv(k,"message",""))}</textarea></label>
-    <label class="chk"><input type="checkbox" name="email" ${dv(k,"email", !!cfg().email?.onTask)?"checked":""}><span>Also email ${esc(s?.name||"the supervisor")} at <b>${esc(s?.email||"no email on file")}</b>. Sent from your connected Gmail.</span></label>
+    <label class="chk"><input type="checkbox" name="email" ${dv(k,"email", !!cfg().email?.onTask)?"checked":""}><span>Also email ${esc(s?.name||"the supervisor")} at <b>${esc(s?.email||"no email on file")}</b>.</span></label>
     ${S.ui.taskErr ? `<ul class="errs"><li>${esc(S.ui.taskErr)}</li></ul>` : ""}
   </div><div class="md-f"><button class="btn" type="button" data-act="close">Cancel</button><button class="btn pri" type="submit">${ic("star")}Assign task</button></div></form>`;
 }
@@ -1468,10 +1477,10 @@ async function saveTask(){
   const k = "task", sups = E().filter(e => reports(e.id).length);
   const pre = S.modal.emp ? emp(S.modal.emp) : null, sid = dv(k,"supervisorId", pre?.supervisorId || sups[0]?.id), team = reports(sid);
   const members = dv(k,"members", pre ? [pre.id] : team.map(e => e.id)).filter(id => team.some(x => x.id === id));
-  const t = {id:uid("t"), title:(dv(k,"title", pre ? `Probation review — ${pre.name}` : `Q4 ${new Date().getFullYear()} performance review`)||"").trim(),
-    kind:dv(k,"kind", pre?.status==="Probation"?"Probation":"Quarterly"), period:(dv(k,"period", pre?.status==="Probation" ? `Probation ${new Date().getFullYear()}` : `Q4 ${new Date().getFullYear()}`)||"").trim(),
+  const tv = taskVals(pre);
+  const t = {id:uid("t"), title:(tv.title||"").trim(), kind:tv.kind, period:(tv.period||"").trim(),
     supervisorId:sid, memberIds:members, done:[], due:dv(k,"due",addDays(today(),14)), message:(dv(k,"message","")||"").trim(), createdBy:S.me, createdAt:new Date().toISOString(), status:"open", email:"none"};
-  if(!t.title || !t.period || !t.due){ S.ui.taskErr = "Fill in the title, period and due date."; render(); return; }
+  if(!t.kind || !t.title || !t.period || !t.due){ S.ui.taskErr = "Choose the review type and fill in the title, period and due date."; render(); return; }
   if(!members.length){ S.ui.taskErr = "Select at least one team member to review."; render(); return; }
   const wantEmail = dv(k,"email", !!cfg().email?.onTask), s = emp(sid);
   S.ui.taskErr = ""; S.modal = null; delete S.drafts[k];
@@ -2795,7 +2804,8 @@ function vRecruitment(){
   ${rej.length ? `<section class="card"><div class="card-h"><h2>Not continued</h2><span class="tag">${rej.length}</span></div><div class="list">${rej.map(c => `<button class="li res" type="button" data-act="cand-open" data-id="${c.id}" style="border-top:1px solid var(--line)"><div class="who">${av(c.id,"sm")}<div><b>${esc(c.name)}</b><span>${esc(c.position)} · ${esc(c.notes||"")}</span></div></div></button>`).join("")}</div></section>` : ""}`;
 }
 function mCand(){
-  const c = S.D.candidates.find(x => x.id === S.modal.id) || {id:uid("c"), name:"", email:"", phone:"", position:"", dept:"", source:"LinkedIn", stage:"applied", appliedAt:today(), interviewAt:"", notes:""};
+  if(!S.modal.id && !S.modal.nid) S.modal.nid = uid("c");   // stable id while the "new candidate" form is open, so typed text survives re-renders
+  const c = S.D.candidates.find(x => x.id === S.modal.id) || {id:S.modal.nid, name:"", email:"", phone:"", position:"", dept:"", source:"LinkedIn", stage:"applied", appliedAt:today(), interviewAt:"", notes:""};
   const k = "cand-"+c.id, isNew = !S.D.candidates.some(x => x.id === c.id), ro = !isHR(), depts = [...new Set(E().map(e => e.dept))];
   const f = (n, l, type="text", extra="") => `<label class="f ${extra}"><span>${l}</span><input type="${type}" name="${n}" value="${esc(dv(k,n,c[n]||""))}" ${ro?"disabled":""}></label>`;
   return `<form data-draft="${k}" data-submit="cand" data-id="${c.id}" novalidate><div class="md-h"><span class="tile c5">${ic("brief")}</span><h2>${isNew?"New candidate":esc(c.name)}</h2>${!isNew?`<span class="pill ${c.stage==="hired"?"p-hired":c.stage==="rejected"?"p-rejected":"p-info"}">${esc((STAGES.find(s=>s[0]===c.stage)||["","Not continued"])[1])}</span>`:""}<button class="ib plain" type="button" data-act="close" aria-label="Close">${ic("x")}</button></div>
@@ -3081,11 +3091,41 @@ async function setCfg(path, value){
 }
 
 /* ================= modal & render ================= */
+/* ---- forms: required fields (*), shake on missing, confirm before an accidental close ---- */
+const REQ = {cand:["name","position","dept"], emp:["name","position","dept","division","office","jobLevel","joinDate","exitDate"], task:["kind","title","period","supervisorId","due"],
+  rem:["title","date"], ann:["title","body"], quota:["amount","reason"], contract:["type","start","end"], note:["text","date"], review:["strengths","improvements"], hol:["date","name"], link:["no","name"], apply:["start","end"]};
+function decorate(root){
+  if(!root) return;
+  for(const f of root.querySelectorAll("form[data-submit]")) for(const n of REQ[f.dataset.submit] || []){
+    const el = f.querySelector(`[name="${n}"]`); if(!el || el.type === "radio" || el.type === "checkbox") continue;
+    el.required = true; el.setAttribute("aria-required", "true"); el.closest(".f")?.classList.add("req");
+  }
+}
+function markInvalid(els){
+  els.forEach((el, i) => { el.classList.remove("inv"); void el.offsetWidth; el.classList.add("inv"); el.closest(".f")?.classList.add("inv-l"); el.setAttribute("aria-invalid", "true"); if(!i){ el.focus({preventScroll:true}); el.scrollIntoView({block:"center", behavior:"smooth"}); } });
+}
+function missingRequired(f){
+  if(f.dataset.submit === "apply" || f.dataset.submit === "review") return [];
+  return [...f.querySelectorAll("[required]")].filter(el => !el.disabled && el.offsetParent !== null && !String(el.value || "").trim());
+}
+const modalDraftKey = () => document.querySelector("#modal form[data-draft]")?.dataset.draft;
+function askClose(){
+  if(!S.modal) return;
+  if(!S.modalDirty){ S.modal = null; renderModal(); return; }
+  S.ui.confirmClose = true; const mb = document.querySelector("#modal .mb");
+  if(mb && !mb.querySelector(".mconf")){ mb.insertAdjacentHTML("beforeend", confirmCloseHtml()); mb.querySelector("[data-act=mc-keep]")?.focus(); }
+}
+const confirmCloseHtml = () => `<div class="mconf" role="alertdialog" aria-labelledby="mconf-t"><div class="mconf-c"><span class="tile c3">${ic("alert")}</span><h3 id="mconf-t">Discard your changes?</h3><p class="muted">You've started filling in this form. If you close it now, what you entered won't be saved.</p>
+  <div class="row end"><button class="btn" type="button" data-act="mc-keep">Keep editing</button><button class="btn bad" type="button" data-act="mc-discard">Discard & close</button></div></div></div>`;
 function renderModal(){
   const el = document.getElementById("modal");
+  if(S.modal !== S._lastModal){ S._lastModal = S.modal; S.modalDirty = false; S.ui.confirmClose = false; }
   if(!S.modal){ el.innerHTML = ""; return; }
   const inner = {req:() => mReq(S.modal.id), task:mTask, review:mReview, cand:mCand, emp:mEmp, contract:mContract, rem:mRem, quota:mQuota, ann:mAnn, mfa:mMfa, appr:mAppr}[S.modal.kind]?.() || "";
-  el.innerHTML = `<div class="mb" data-act="backdrop"><div class="md ${S.modal.kind==="review"||S.modal.kind==="emp"||S.modal.kind==="appr"?"wide":""}" role="dialog" aria-modal="true">${inner}</div></div>`;
+  const sc = el.querySelector(".md")?.scrollTop || 0, same = el.dataset.k === S.modal.kind + ":" + (S.modal.id || "");
+  el.innerHTML = `<div class="mb" data-act="backdrop"><div class="md ${S.modal.kind==="review"||S.modal.kind==="emp"||S.modal.kind==="appr"?"wide":""}" role="dialog" aria-modal="true">${inner}</div>${S.ui.confirmClose ? confirmCloseHtml() : ""}</div>`;
+  el.dataset.k = S.modal.kind + ":" + (S.modal.id || ""); if(same && sc) el.querySelector(".md").scrollTop = sc;
+  decorate(el);
 }
 async function wipeSample(){
   const gone = new Set(S.R.employees.filter(e => e.example && !e.system).map(e => e.id));
@@ -3560,6 +3600,7 @@ function render(){
     html = (views[S.view] || vDashboard)();
   }
   main.innerHTML = `<div class="wrap">${link || S.mode === "loading" ? "" : banners()}${html}</div>`;
+  decorate(main);
   renderModal();
   let el = aid ? document.getElementById(aid) : null;
   if(!el && aname && aform) el = document.querySelector(`form[data-draft="${CSS.escape(aform)}"] [name="${CSS.escape(aname)}"]`);
@@ -3580,7 +3621,9 @@ document.addEventListener("click", async ev => {
   if(!b) return;
   const act = b.dataset.act, id = b.dataset.id, v = b.dataset.v;
   switch(act){
-    case "backdrop": if(ev.target === b){ S.modal = null; renderModal(); } return;
+    case "backdrop": if(ev.target === b) askClose(); return;
+    case "mc-keep": S.ui.confirmClose = false; document.querySelector("#modal .mconf")?.remove(); return;
+    case "mc-discard": { const k = modalDraftKey(); if(k && k !== "apply") delete S.drafts[k]; S.ui.confirmClose = false; S.modal = null; renderModal(); return; }
     case "close": S.modal = null; renderModal(); return;
     case "go": { const p = {}; if(b.dataset.p === "wfh") p.kind = "wfh"; else if(b.dataset.p === "leave") p.kind = "leave"; if(v === "myrequests" && b.dataset.p) p.scope = b.dataset.p; return go(v, p); }
     case "nav-open": document.getElementById("app").classList.add("open"); return;
@@ -3741,16 +3784,21 @@ function syncDraft(t){
 }
 document.addEventListener("input", ev => {
   const t = ev.target;
+  if(t.closest?.("#modal form") && t.id !== "mfa-code") S.modalDirty = true;
+  if(t.classList?.contains("inv")){ t.classList.remove("inv"); t.removeAttribute("aria-invalid"); t.closest(".f")?.classList.remove("inv-l"); }
   if(t.id === "q"){ S.q = t.value; S.pop = t.value.trim() ? "search" : null; renderTop(); const q = document.getElementById("q"); q.focus(); q.setSelectionRange(q.value.length, q.value.length); return; }
   if(t.id === "dq"){ S.ui.dq = t.value; render(); return; }
   if(t.id === "aud-q"){ S.ui.audit.q = t.value; render(); return; }
   if(t.id === "restore-confirm"){ S.ui.restore.confirm = t.value.trim(); return; }
   const f = syncDraft(t); if(!f) return;
+  if(f.dataset.draft === "task" && (t.name === "title" || t.name === "period")) S.drafts.task[t.name === "title" ? "_tEdited" : "_pEdited"] = true;
   if(f.dataset.draft === "apply" && t.type !== "radio") document.getElementById("summary") && (document.getElementById("summary").innerHTML = applySummary());
   if(f.dataset.draft.startsWith("dec-") && t.value.trim()) delete S.ui["err-"+f.dataset.draft.slice(4)];
 });
 document.addEventListener("change", async ev => {
   const t = ev.target;
+  if(t.closest?.("#modal form") && t.id !== "mfa-code") S.modalDirty = true;
+  if(t.classList?.contains("inv")){ t.classList.remove("inv"); t.removeAttribute("aria-invalid"); t.closest(".f")?.classList.remove("inv-l"); }
   if(t.id === "cal-dept"){ S.ui.calDept = t.value; render(); return; }
   if(t.id === "ddept"){ S.ui.ddept = t.value; render(); return; }
   if(t.id === "dformer"){ S.ui.dformer = t.checked; render(); return; }
@@ -3807,6 +3855,7 @@ document.addEventListener("change", async ev => {
 });
 document.addEventListener("submit", async ev => {
   ev.preventDefault(); const f = ev.target, s = f.dataset.submit;
+  { const miss = missingRequired(f); if(miss.length){ markInvalid(miss); toast(miss.length === 1 ? `Please fill in “${(miss[0].closest(".f")?.querySelector("span")?.textContent || "this field").replace(/\s*\*$/, "")}”.` : `Please fill in the ${miss.length} fields marked *.`); return; } }
   if(s === "apply") return submitApply();
   if(s === "task") return saveTask();
   if(s === "review") return saveReview();
@@ -3843,7 +3892,7 @@ document.addEventListener("dragover", ev => { const d = ev.target.closest?.("#at
 document.addEventListener("dragleave", ev => { ev.target.closest?.("#att-drop,#emp-drop,#restore-drop,#pay-drop")?.classList.remove("over"); });
 document.addEventListener("drop", ev => { const d = ev.target.closest?.("#att-drop,#emp-drop,#restore-drop,#pay-drop"); if(!d) return; ev.preventDefault(); const f = ev.dataTransfer?.files?.[0]; if(f) (d.id === "pay-drop" ? (x => readPayFile(x).then(payCheck)) : d.id === "emp-drop" ? readEmpFile : d.id === "restore-drop" ? readRestoreFile : readAttFile)(f); });
 document.addEventListener("keydown", ev => {
-  if(ev.key === "Escape"){ if(S.modal){ S.modal = null; renderModal(); } else if(S.pop){ S.pop = null; renderTop(); } document.getElementById("app").classList.remove("open"); }
+  if(ev.key === "Escape"){ if(S.modal){ if(S.ui.confirmClose){ S.ui.confirmClose = false; document.querySelector("#modal .mconf")?.remove(); } else askClose(); } else if(S.pop){ S.pop = null; renderTop(); } document.getElementById("app").classList.remove("open"); }
 });
 
 /* ================= boot ================= */
