@@ -523,6 +523,12 @@
       return data;
     },
     async apprAck(id, comment) { const { data, error } = await sb.rpc("hrm_appraisal_ack", { aid: id, comment: comment || "" }); if (error) throw mapErr(error); return data; },
+    async deleteAccount(empId) {
+      const { data, error } = await sb.functions.invoke("send-email", { body: { action: "delete_user", empId } });
+      if (error) { let d = {}; try { d = await error.context.json(); } catch (e) { /* none */ } throw { message: d.error === "not_allowed" ? "only Admin can delete accounts (not the owner's or your own)" : "the sign-in account couldn't be deleted (" + String(d.error || error.message || "server error").replace(/_/g, " ") + ")" }; }
+      return data;
+    },
+    async removePayslip(path) { const { error } = await sb.storage.from("payslips").remove([path]); if (error) throw mapErr(error); },
     async gcal(action, extra) {
       const { data, error } = await sb.functions.invoke("gcal", { body: Object.assign({ action }, extra || {}) });
       if (error) { let d = {}; try { d = await error.context.json(); } catch (e) { /* none */ } throw { code: d.error || "server_error", message: String(d.error || error.message || "server error").replace(/_/g, " "), detail: d.detail || "" }; }

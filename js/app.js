@@ -90,7 +90,7 @@ const cfg = () => S.config;
 
 /* ================= dates ================= */
 const pad = n => String(n).padStart(2,"0");
-const iso = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+const iso = d => `${String(d.getFullYear()).padStart(4, "0")}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
 const parse = s => { const [y,m,d] = s.split("-").map(Number); return new Date(y, m-1, d); };
 const today = () => tzToday();
 const addDays = (s, n) => { const d = parse(s); d.setDate(d.getDate()+n); return iso(d); };
@@ -294,7 +294,7 @@ const dv = (k, n, d) => (S.drafts[k] && n in S.drafts[k]) ? S.drafts[k][n] : d;
    rd/<uid>, ph/<uid>   per-person read receipts and self-uploaded profile photo
    audit/<uid>/m/<yyyy-mm>  each person's own monthly audit trail
    requests, notifs, counters   shared working data (Contributors write) */
-const APP_VERSION = "4.1.0", SCHEMA = 2;
+const APP_VERSION = "4.2.0", SCHEMA = 2;
 const PRIVATE_FIELDS = ["phone","gender","birthDate","address","exitReason","contract","contracts","notes","quotaLog"];
 const SUB_COLS = ["employees","private","requests","candidates","tasks","reviews","reminders","notifs","announcements","attendance","attImports","backups","dec","links","rd","ph","sub","payslips","payruns","appraisals"];
 const CORE_COLS = ["employees","requests","tasks","notifs","announcements","attendance"];
@@ -878,7 +878,7 @@ function attention(ids, supId){
   for(const k of S.D.tasks.filter(x => x.status === "open" && (!supId || x.supervisorId === supId))){ const d = diffDays(t, k.due), left = k.memberIds.length - k.done.length;
     if(d < 0) items.push({sev:3, text:`Review “${k.title}” is ${-d} day(s) overdue (${left} pending with ${nm(k.supervisorId)})`, act:"go", v:"reviews", btn:"View"});
     else if(d <= 21) items.push({sev:1, text:`${left} review(s) due ${fmt(k.due)} — ${k.title}`, act:"go", v:"reviews", btn:"View"}); }
-  const stale = S.D.requests.filter(r => r.status === "pending" && inS(r.empId) && diffDays(r.createdAt.slice(0,10), t) >= 3);
+  const stale = S.D.requests.filter(r => r.status === "pending" && inS(r.empId) && diffDays(String(r.createdAt || t).slice(0,10), t) >= 3);
   if(stale.length) items.push({sev:2, text:`${stale.length} time-off request(s) waiting more than 3 days for approval`, act:"go", v:supId ? "approvals" : "myrequests", p:supId ? "" : "all", btn:"Check"});
   if(!ids){
     for(const c of S.D.candidates.filter(x => x.stage === "offer")) items.push({sev:1, text:`${c.name} has an open offer for ${c.position}`, act:"cand-open", id:c.id, btn:"Open"});
@@ -1283,6 +1283,7 @@ function vProfile(){
       <div class="row" style="gap:8px;margin-top:10px"><span class="tag">${esc(e.empNo)}</span><span class="pill ${e.status==="Probation"?"p-info":e.status==="Resigned"?"p-cancelled":"p-active"}">${esc(e.status)}</span><span class="tag">${esc(jobOf(e))}</span>${e.role==="hrd"?`<span class="tag">HRD admin</span>`:""}${priv?`<span class="pill p-${cs.k}">${esc(e.contract?.type||"")} · ${esc(cs.t)}</span>`:""}</div></div>
     <div class="row">${isHR() && !e.system ? `<span class="pill ${inviteState(e)[1]}" title="HRM account">${esc(inviteState(e)[0])}</span>${canInvite(e) ? `<button class="btn" type="button" data-act="invite" data-id="${e.id}">${ic("mail")}${e.invitedAt ? "Resend invitation" : "Send invitation"}</button>` : ""}` : ""}
       ${isHR() ? `<button class="btn" type="button" data-act="emp-edit" data-id="${e.id}">${ic("edit")}Edit</button>` : ""}
+      ${realAdmin() && !e.system && e.id !== S.realEmpId ? `<button class="btn bad" type="button" data-act="emp-delete" data-id="${e.id}" title="Delete this employee permanently">${ic("trash")}Delete</button>` : ""}
       ${realAdmin() && window.HRM?.mfa && e.userId && e.id !== S.realEmpId ? `<button class="btn" type="button" data-act="mfa-reset" data-id="${e.id}" title="For a lost or replaced phone: ${esc(first(e.id))} sets up the authenticator again at the next sign-in">${ic("shield")}${S.ui.mfaReset === e.id ? "Tap again to reset" : "Reset 2-step"}</button>` : ""}
       ${isHR() && !self ? `<button class="btn pri" type="button" data-act="task-new" data-emp="${e.id}">${ic("star")}Request review</button>` : ""}</div></div>
     <div class="tabs" role="tablist" style="padding:0 14px">${tabs.map(([k,l]) => `<button type="button" role="tab" data-act="ptab" data-v="${k}" aria-selected="${(S.ui.ptab||"overview")===k}">${l}</button>`).join("")}</div></section>
@@ -2865,6 +2866,48 @@ function staleRev(id){
   if(S.modal?.rev != null && cur && Number(cur.rev || 0) !== Number(S.modal.rev || 0)){ toast(`${cur.name}'s record was changed by someone else while you were editing. Close it and open it again to see the latest version.`); return true; }
   return false;
 }
+/* permanent delete (Admin) — for wrong entries, test accounts or people who never joined. Leavers should be set to Resigned instead. */
+function empFootprint(id){
+  const R = S.R, n = (c, f) => (R[c] || []).filter(f).length;
+  return {requests:n("requests", r => r.empId === id), approvedLeave:n("requests", r => r.empId === id && r.status === "approved"), attendance:n("attendance", a => a.empId === id),
+    payslips:n("payslips", x => x.empId === id), reviews:n("reviews", r => r.empId === id) + n("appraisals", a => a.empId === id && ["shared","acknowledged","closed"].includes(a.status)),
+    reports:reports(id).map(x => x.id)};
+}
+function mEmpDel(){
+  const e = emp(S.modal.id); if(!e) return `<div class="md-b">Employee not found.</div>`;
+  const fp = empFootprint(e.id), history = fp.approvedLeave + fp.attendance + fp.payslips + fp.reviews, typed = dv("empdel", "confirm", "");
+  return `<form data-draft="empdel" data-submit="empdel" novalidate><div class="md-h"><span class="tile c6">${ic("trash")}</span><h2>Delete ${esc(e.name)} permanently?</h2><button class="ib plain" type="button" data-act="close" aria-label="Close">${ic("x")}</button></div>
+    <div class="md-b stack">
+      <div class="note warn">${ic("alert")}<div><b>This can't be undone.</b> The employee record, private data, contracts, leave requests, attendance, payslips, reviews and notifications of ${esc(first(e.id))} are removed${e.userId ? `, and their sign-in account is deleted` : ""}. The audit log keeps a record of the deletion.</div></div>
+      ${history ? `<div class="note">${ic("info")}<div><b>${esc(first(e.id))} already has history:</b> ${[fp.approvedLeave && `${fp.approvedLeave} approved leave`, fp.attendance && `${fp.attendance} month(s) of attendance`, fp.payslips && `${fp.payslips} payslip(s)`, fp.reviews && `${fp.reviews} review(s)`].filter(Boolean).join(", ")}.
+        If they worked here and left, set their status to <b>Resigned</b> instead — the history stays for audits and legal records. <button class="btn link" type="button" data-act="emp-edit" data-id="${e.id}">Edit status instead</button></div></div>` : ""}
+      ${fp.reports.length ? `<ul class="errs"><li>${esc(first(e.id))} is the direct supervisor of ${fp.reports.map(nm).map(esc).join(", ")}. Give them another supervisor first.</li></ul>` : ""}
+      <label class="f"><span>Type <b>${esc(e.name)}</b> to confirm</span><input type="text" name="confirm" autocomplete="off" value="${esc(typed)}" ${fp.reports.length ? "disabled" : ""}></label>
+      ${S.ui.delErr ? `<ul class="errs"><li>${esc(S.ui.delErr)}</li></ul>` : ""}
+    </div><div class="md-f"><button class="btn" type="button" data-act="close">Cancel</button><button class="btn bad" type="submit" ${fp.reports.length ? "disabled" : ""}>${ic("trash")}Delete permanently</button></div></form>`;
+}
+async function deleteEmp(){
+  const e = emp(S.modal.id); if(!e || !realAdmin() || e.id === S.realEmpId || e.system) return;
+  const typed = String(dv("empdel", "confirm", "") || "").trim();
+  if(typed.toLowerCase() !== e.name.trim().toLowerCase()){ S.ui.delErr = `Type the full name exactly: ${e.name}`; renderModal(); markInvalid([document.querySelector('#modal [name="confirm"]')].filter(Boolean)); return; }
+  if(reports(e.id).length){ S.ui.delErr = "Reassign their team first."; renderModal(); return; }
+  const id = e.id, name = e.name, R = S.R;
+  const own = {requests:x => x.empId === id, attendance:x => x.empId === id, appraisals:x => x.empId === id, reviews:x => x.empId === id, notifs:x => x.to === id, reminders:x => x.empId === id, payslips:x => x.empId === id, links:x => x.empId === id};
+  S.ui.delBusy = true; S.ui.delErr = "";
+  const ok = await run(async () => {
+    if(e.userId && S.mode === "db") await window.HRM.deleteAccount(id);
+    for(const [c, f] of Object.entries(own)) for(const x of (R[c] || []).filter(f)){
+      if(c === "payslips" && x.file && window.HRM?.removePayslip) { try { await window.HRM.removePayslip(x.file); } catch(err){} }
+      await store.del(c, x.id);
+    }
+    for(const t of (R.tasks || []).filter(t => (t.memberIds || []).includes(id))) await store.put("tasks", Object.assign(clone(t), {memberIds:t.memberIds.filter(m => m !== id), done:(t.done || []).filter(m => m !== id)}));
+    await store.del("employees", id);
+    if(e.userId && S.mode === "db") for(const p of [`pv/${e.userId}/d/self`, `pv/${e.userId}/d/team`, `rd/${e.userId}`]) { try { await S.db.doc(p).delete(); } catch(err){} }
+    audit("employee_deleted", name, `${e.empNo || ""}${e.userId ? " · sign-in account deleted" : ""}`);
+  }, `${name} was deleted permanently.`);
+  S.ui.delBusy = false;
+  if(ok){ S.modal = null; delete S.drafts.empdel; renderModal(); go("directory"); }
+}
 async function saveEmp(){
   const fromCand = S.modal.cand ? S.D.candidates.find(c => c.id === S.modal.cand) : null, e0 = S.modal.id ? emp(S.modal.id) : null;
   if(e0 && staleRev(e0.id)) return;
@@ -3096,6 +3139,7 @@ const REQ = {cand:["name","position","dept"], emp:["name","position","dept","div
   rem:["title","date"], ann:["title","body"], quota:["amount","reason"], contract:["type","start","end"], note:["text","date"], review:["strengths","improvements"], hol:["date","name"], link:["no","name"], apply:["start","end"]};
 function decorate(root){
   if(!root) return;
+  for(const d of root.querySelectorAll('input[type="date"]')){ if(!d.max) d.max = "9999-12-31"; }   // year: 4 digits
   for(const f of root.querySelectorAll("form[data-submit]")) for(const n of REQ[f.dataset.submit] || []){
     const el = f.querySelector(`[name="${n}"]`); if(!el || el.type === "radio" || el.type === "checkbox") continue;
     el.required = true; el.setAttribute("aria-required", "true"); el.closest(".f")?.classList.add("req");
@@ -3121,11 +3165,17 @@ function renderModal(){
   const el = document.getElementById("modal");
   if(S.modal !== S._lastModal){ S._lastModal = S.modal; S.modalDirty = false; S.ui.confirmClose = false; }
   if(!S.modal){ el.innerHTML = ""; return; }
-  const inner = {req:() => mReq(S.modal.id), task:mTask, review:mReview, cand:mCand, emp:mEmp, contract:mContract, rem:mRem, quota:mQuota, ann:mAnn, mfa:mMfa, appr:mAppr}[S.modal.kind]?.() || "";
-  const sc = el.querySelector(".md")?.scrollTop || 0, same = el.dataset.k === S.modal.kind + ":" + (S.modal.id || "");
+  const inner = {req:() => mReq(S.modal.id), task:mTask, review:mReview, cand:mCand, emp:mEmp, contract:mContract, rem:mRem, quota:mQuota, ann:mAnn, mfa:mMfa, appr:mAppr, empdel:mEmpDel}[S.modal.kind]?.() || "";
+  // keep the scroll position and the focused field when the open form re-renders (no jumping back to the top)
+  const same = el.dataset.k === S.modal.kind + ":" + (S.modal.id || ""), mb0 = el.querySelector(".mb"), sc = mb0 ? mb0.scrollTop : 0, wsc = window.scrollY;
+  const a = document.activeElement, inM = a && el.contains(a), fn = inM && a.name, fv = inM && a.type === "radio" ? a.value : null, fid = inM && a.id;
+  let sel = null; try { if(inM && "selectionStart" in a && a.selectionStart != null) sel = [a.selectionStart, a.selectionEnd]; } catch(e){}
   el.innerHTML = `<div class="mb" data-act="backdrop"><div class="md ${S.modal.kind==="review"||S.modal.kind==="emp"||S.modal.kind==="appr"?"wide":""}" role="dialog" aria-modal="true">${inner}</div>${S.ui.confirmClose ? confirmCloseHtml() : ""}</div>`;
-  el.dataset.k = S.modal.kind + ":" + (S.modal.id || ""); if(same && sc) el.querySelector(".md").scrollTop = sc;
+  el.dataset.k = S.modal.kind + ":" + (S.modal.id || "");
   decorate(el);
+  if(same){ const mb = el.querySelector(".mb"); if(mb) mb.scrollTop = sc; if(window.scrollY !== wsc) window.scrollTo(0, wsc);
+    const t = fid ? document.getElementById(fid) : fn ? el.querySelector(`[name="${CSS.escape(fn)}"]${fv != null ? `[value="${CSS.escape(fv)}"]` : ""}`) : null;
+    if(t && t !== document.activeElement){ try { t.focus({preventScroll:true}); if(sel && t.setSelectionRange) t.setSelectionRange(sel[0], sel[1]); } catch(e){} } }
 }
 async function wipeSample(){
   const gone = new Set(S.R.employees.filter(e => e.example && !e.system).map(e => e.id));
@@ -3601,10 +3651,12 @@ function render(){
   }
   main.innerHTML = `<div class="wrap">${link || S.mode === "loading" ? "" : banners()}${html}</div>`;
   decorate(main);
-  renderModal();
+  // background refreshes (live data) don't redraw a form the user is typing in — explicit actions still call renderModal()
+  const af = document.activeElement;
+  if(!(S._bg && S.modal && af && document.getElementById("modal").contains(af) && /^(INPUT|TEXTAREA|SELECT)$/.test(af.tagName))) renderModal();
   let el = aid ? document.getElementById(aid) : null;
   if(!el && aname && aform) el = document.querySelector(`form[data-draft="${CSS.escape(aform)}"] [name="${CSS.escape(aname)}"]`);
-  if(el && el !== document.body){ try { el.focus({preventScroll:true}); if(sel && el.setSelectionRange) el.setSelectionRange(sel[0], sel[1]); } catch(e){} }
+  if(el && el !== document.body && el !== document.activeElement){ try { el.focus({preventScroll:true}); if(sel && el.setSelectionRange) el.setSelectionRange(sel[0], sel[1]); } catch(e){} }
 }
 function go(view, prm={}){
   S.view = view; S.prm = prm; S.pop = null; document.getElementById("app").classList.remove("open");
@@ -3668,6 +3720,7 @@ document.addEventListener("click", async ev => {
     case "first-hr": S.ui.empErr = ""; S.drafts["emp-new"] = {hrAdmin:isAdmin(), jobLevel:"Supervisor", position:"HR Manager", dept:"Human Resources", status:"Active", ctype:"PKWTT", joinDate:today()}; S.modal = {kind:"emp"}; renderModal(); return;
     case "invite": await inviteEmp(id); render(); return;
     case "invite-all": await inviteMany(activeE().filter(x => canInvite(x) && !x.invitedAt).map(x => x.id)); return;
+    case "emp-delete": if(!realAdmin()) return; S.ui.delErr = ""; delete S.drafts.empdel; S.modal = {kind:"empdel", id}; renderModal(); return;
     case "emp-edit": S.ui.empErr = ""; S.modal = {kind:"emp", id, rev:emp(id)?.rev}; renderModal(); return;
     case "contract-new": S.modal = {kind:"contract", id, rev:emp(id)?.rev}; renderModal(); return;
     case "quota-adj": if(!isHR()) return; S.ui.qErr = ""; delete S.drafts["qa-"+id]; S.modal = {kind:"quota", id, type:v, rev:emp(id)?.rev}; renderModal(); return;
@@ -3842,16 +3895,33 @@ document.addEventListener("change", async ev => {
   if(t.dataset.cfg){ const val = t.type === "checkbox" ? t.checked : t.type === "number" ? Number(t.value||0) : t.value; await setCfg(t.dataset.cfg, val); return; }
   const f = syncDraft(t); if(!f) return;
   const dk = f.dataset.draft;
+  // dates: while the year is still being typed (e.g. 0202) only save the value; re-render once it's a real year or the field loses focus
+  if(t.type === "date" && t.value && !/^(19|20)\d\d-/.test(t.value) && !ev.hrmBlur) return;
   if(dk === "apply" && t.name === "type"){ render(); return; }
   if(dk === "apply") { document.getElementById("summary").innerHTML = applySummary(); return; }
   if(dk.startsWith("ap-") && t.type === "radio"){ apLiveScore(dk); return; }
   if(dk.startsWith("rv-") && t.type === "radio"){ const crit = cfg().criteria||[], vals = crit.map(c => Number(dv(dk,"s:"+c,0))).filter(Boolean); document.getElementById("rv-avg").textContent = vals.length ? (vals.reduce((a,b)=>a+b,0)/vals.length).toFixed(1) : "—"; return; }
   if(t.dataset.rerender || (dk === "task" && t.name === "supervisorId")){ if(dk === "task") delete S.drafts.task.members; renderModal(); return; }
   if(dk.startsWith("emp-") && (t.name === "status" || t.name === "gender")){ renderModal(); return; }
-  if(dk.startsWith("emp-") && (t.name === "ctype" || t.name === "cstart" || t.name === "joinDate")){ if(t.name !== "cend") delete S.drafts[dk].cend; if(t.name === "ctype") for(const x of Object.keys(S.drafts[dk])) if(x.startsWith("g:")) delete S.drafts[dk][x]; if(t.name === "joinDate") delete S.drafts[dk].cstart; renderModal(); return; }
+  // join date / contract start: update the dependent dates in place (no re-render, so typing a date never loses the cursor)
+  if(dk.startsWith("emp-") && (t.name === "cstart" || t.name === "joinDate")){
+    const d = S.drafts[dk], fm = t.form, ctype = dv(dk, "ctype", "Probation");
+    if(t.name === "joinDate"){ delete d.cstart; const cs = fm.querySelector('[name="cstart"]'); if(cs) cs.value = t.value; }
+    delete d.cend; const start = t.name === "joinDate" ? t.value : t.value, ce = fm.querySelector('[name="cend"]');
+    if(ce && start && /^(19|20)\d\d-/.test(start)) ce.value = addDays(start, ctype === "Probation" ? 90 : 365);
+    if(ev.hrmBlur) renderModal();   // after leaving the field: refresh the leave grants that depend on the dates
+    return;
+  }
+  if(dk.startsWith("emp-") && t.name === "ctype"){ if(t.name !== "cend") delete S.drafts[dk].cend; if(t.name === "ctype") for(const x of Object.keys(S.drafts[dk])) if(x.startsWith("g:")) delete S.drafts[dk][x]; if(t.name === "joinDate") delete S.drafts[dk].cstart; renderModal(); return; }
+  if(dk.startsWith("ct-") && t.name === "start" && !ev.hrmBlur){ delete S.drafts[dk].end; return; }
   if(dk.startsWith("ct-") && (t.name === "type" || t.name === "start")){ delete S.drafts[dk].end; if(t.name === "type") for(const x of Object.keys(S.drafts[dk])) if(x.startsWith("g:")) delete S.drafts[dk][x]; renderModal(); return; }
   if((dk.startsWith("ct-") || dk.startsWith("emp-")) && t.name === "grant"){ renderModal(); return; }
   if(dk.startsWith("qa-")){ if(t.name === "type") delete S.drafts[dk].amount; renderModal(); return; }
+});
+document.addEventListener("focusin", ev => { if(ev.target?.type === "date") ev.target._v0 = ev.target.value; });
+document.addEventListener("focusout", ev => {
+  const t = ev.target; if(t?.type !== "date" || !t.closest?.("form[data-draft]") || t.value === t._v0) return;
+  setTimeout(() => { if(!t.isConnected) return; const e2 = new Event("change", {bubbles:true}); e2.hrmBlur = true; t.dispatchEvent(e2); }, 0);
 });
 document.addEventListener("submit", async ev => {
   ev.preventDefault(); const f = ev.target, s = f.dataset.submit;
@@ -3862,6 +3932,7 @@ document.addEventListener("submit", async ev => {
   if(s === "cand") return saveCand(f.dataset.id);
   if(s === "emp") return saveEmp();
   if(s === "mfa") return mfaConfirm();
+  if(s === "empdel") return deleteEmp();
   if(s === "contract") return saveContract();
   if(s === "quota") return saveQuota();
   if(s === "ann") return saveAnn();
@@ -3957,7 +4028,7 @@ async function boot(){
   const tick = () => {
     if(!S.loadedAll && CORE_COLS.every(c => S.loaded[c]) && S.loaded.config) S.loadedAll = true;
     rebuild(); resolveMe();
-    if(S.loadedAll){ if(!S.realEmpId) ownerBootstrap(); render(); scheduleSync(); pruneOwnSubs(); if(DEEP && S.me) openDeep(); if(!S.ui.apPlanned && S.loaded.appraisals){ S.ui.apPlanned = true; setTimeout(apEnsure, 3000); } }
+    if(S.loadedAll){ if(!S.realEmpId) ownerBootstrap(); S._bg = true; try { render(); } finally { S._bg = false; } scheduleSync(); pruneOwnSubs(); if(DEEP && S.me) openDeep(); if(!S.ui.apPlanned && S.loaded.appraisals){ S.ui.apPlanned = true; setTimeout(apEnsure, 3000); } }
   };
   for(const c of SUB_COLS) db.collection(c).onSnapshot(snap => { S.R[c] = snap.docs.map(x => Object.assign({id:x.id}, x.data())); if(!snap.metadata.fromCache) S.loaded[c] = true; tick(); }, fail);
   db.collection("config").doc("main").onSnapshot(snap => {

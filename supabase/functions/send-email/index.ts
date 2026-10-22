@@ -108,6 +108,22 @@ Deno.serve(async (req) => {
     return json(200, { status: "reset", removed: (list?.factors || []).length });
   }
 
+  if (m.action === "delete_user") {
+    // permanent employee deletion (Admin / owner): removes the person's sign-in account; the app deletes the records
+    const empId = String(m.empId || "");
+    if (!/^[A-Za-z0-9_-]{1,60}$/.test(empId)) return json(400, { error: "bad_request" });
+    const admin = createClient(env("SUPABASE_URL"), env("SUPABASE_SERVICE_ROLE_KEY"), { auth: { persistSession: false } });
+    const { data: doc } = await admin.from("docs").select("data").eq("path", "employees/" + empId).maybeSingle();
+    const target = String((doc?.data as Record<string, unknown>)?.userId || "");
+    if (!target) return json(200, { status: "no_account" });
+    const { data: allowed } = await sb.rpc("hrm_mfa_reset_allowed", { target });
+    if (allowed !== true) return json(403, { error: "not_allowed" });
+    const { error: derr } = await admin.auth.admin.deleteUser(target);
+    if (derr && !/not.?found/i.test(derr.message)) { console.error("deleteUser", derr); return json(502, { error: "delete_failed" }); }
+    await admin.from("docs").delete().like("path", "links/" + target);
+    return json(200, { status: "deleted" });
+  }
+
   if (m.action === "invite") {
     if (level < 2) return json(403, { error: "not_allowed" });
     const empId = String(m.empId || "");
