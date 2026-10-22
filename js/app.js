@@ -290,7 +290,7 @@ const dv = (k, n, d) => (S.drafts[k] && n in S.drafts[k]) ? S.drafts[k][n] : d;
    rd/<uid>, ph/<uid>   per-person read receipts and self-uploaded profile photo
    audit/<uid>/m/<yyyy-mm>  each person's own monthly audit trail
    requests, notifs, counters   shared working data (Contributors write) */
-const APP_VERSION = "3.9.0", SCHEMA = 2;
+const APP_VERSION = "3.9.1", SCHEMA = 2;
 const PRIVATE_FIELDS = ["phone","gender","birthDate","address","exitReason","contract","contracts","notes","quotaLog"];
 const SUB_COLS = ["employees","private","requests","candidates","tasks","reviews","reminders","notifs","announcements","attendance","attImports","backups","dec","links","rd","ph","sub","payslips","payruns"];
 const CORE_COLS = ["employees","requests","tasks","notifs","announcements","attendance"];
@@ -1255,9 +1255,9 @@ function vDirectory(){
     <select id="doff" style="max-width:200px" aria-label="Office"><option value="">All offices</option>${(cfg().offices||[]).map(x => `<option ${off===x?"selected":""}>${esc(x)}</option>`).join("")}</select>
     <select id="ddept" style="max-width:240px" aria-label="Division"><option value="">All divisions</option>${depts.map(x => `<option ${dept===x?"selected":""}>${esc(x)}</option>`).join("")}</select>
     <label class="chk"><input type="checkbox" id="dformer" ${S.ui.dformer?"checked":""}><span>Show former employees</span></label></div></div>
-    <div class="tw"><table class="t rt"><thead><tr><th>Employee</th><th>ID</th><th>Division</th><th>Office</th><th>Supervisor</th><th>Status</th>${isMgmt()?"<th>Contract</th>":""}<th class="r"></th></tr></thead><tbody>
-    ${list.map(e => { const cs = contractState(e.contract); return `<tr class="click" data-act="open-emp" data-id="${e.id}"><td class="wide">${who(e.id, `${e.position} · ${e.dept}`)}</td><td data-l="ID">${esc(e.empNo)}</td><td data-l="Division">${esc(e.division||"—")}</td><td data-l="Office">${esc(e.office||"—")}</td>
-      <td data-l="Supervisor">${e.supervisorId?esc(nm(e.supervisorId)):"—"}</td><td data-l="Status"><span class="pill ${e.status==="Resigned"?"p-cancelled":e.status==="Probation"?"p-info":"p-active"}">${esc(e.status)}</span></td>
+    <div class="tw"><table class="t rt"><thead><tr><th>Employee</th><th>ID</th><th>Position</th><th>Division</th><th>Office</th><th>Status</th>${isMgmt()?"<th>Contract</th>":""}<th class="r"></th></tr></thead><tbody>
+    ${list.map(e => { const cs = contractState(e.contract); return `<tr class="click" data-act="open-emp" data-id="${e.id}"><td class="wide">${who(e.id, e.dept || "")}</td><td data-l="ID" class="nw">${esc(e.empNo)}</td><td data-l="Position">${esc(e.position || "—")}<span class="small muted" style="display:block">${esc(jobOf(e))}</span></td><td data-l="Division">${esc(e.division||"—")}</td><td data-l="Office">${esc(e.office||"—")}</td>
+      <td data-l="Status"><span class="pill ${e.status==="Resigned"?"p-cancelled":e.status==="Probation"?"p-info":"p-active"}">${esc(e.status)}</span></td>
       ${isMgmt()?`<td data-l="Contract"><span class="pill p-${cs.k}">${esc(e.contract?.type||"")} · ${esc(cs.t)}</span></td>`:""}<td class="r"><button class="btn link" type="button" data-act="open-emp" data-id="${e.id}">Profile</button></td></tr>`; }).join("") || `<tr><td colspan="7"><div class="empty">No employees match.</div></td></tr>`}
     </tbody></table></div></section>`;
 }
