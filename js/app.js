@@ -322,7 +322,7 @@ const dv = (k, n, d) => (S.drafts[k] && n in S.drafts[k]) ? S.drafts[k][n] : d;
    rd/<uid>, ph/<uid>   per-person read receipts and self-uploaded profile photo
    audit/<uid>/m/<yyyy-mm>  each person's own monthly audit trail
    requests, notifs, counters   shared working data (Contributors write) */
-const APP_VERSION = "4.5.0", SCHEMA = 2;
+const APP_VERSION = "4.5.1", SCHEMA = 2;
 const PRIVATE_FIELDS = ["phone","gender","birthDate","address","exitReason","contract","contracts","notes","quotaLog"];
 const SUB_COLS = ["employees","private","requests","candidates","tasks","reviews","reminders","notifs","announcements","attendance","attImports","backups","dec","links","rd","ph","sub","payslips","payruns","appraisals","kiosks","facestat"];
 const CORE_COLS = ["employees","requests","tasks","notifs","announcements","attendance"];
@@ -2021,6 +2021,20 @@ const MAPS = {id:/^(id|emp.?id|employee.?(id|no|number|code)|nik|nip|badge|ac.?n
   in:/^(check.?in|clock.?in|in|masuk|jam.?masuk|time.?in|first.?(in|punch)|scan.?masuk)$/i,
   out:/^(check.?out|clock.?out|out|pulang|keluar|jam.?(pulang|keluar)|time.?out|last.?(out|punch)|scan.?pulang)$/i,
   dt:/^(date.?time|timestamp|waktu|datetime|punch.?time|time|jam|scan.?time)$/i};
+// time columns: "Start / Out / In / Finish" (or Masuk / Istirahat / Kembali / Pulang) = check-in, break out, break in, check-out
+const TC = {
+  start:/^(check.?in|clock.?in|start|mulai|jam.?mulai|masuk|jam.?masuk|time.?in|first.?(in|punch)|scan.?masuk|datang)$/i,
+  end:/^(check.?out|clock.?out|finish|end|selesai|jam.?selesai|pulang|jam.?pulang|time.?out|last.?(out|punch)|scan.?pulang)$/i,
+  bout:/^(break.?(start|out)|out.?break|istirahat|istirahat.?(mulai|keluar)|keluar.?istirahat|lunch.?(start|out))$/i,
+  bin:/^(break.?(end|in)|in.?break|kembali|istirahat.?(selesai|masuk|kembali)|masuk.?istirahat|lunch.?(end|in))$/i,
+  pout:/^(out|keluar)$/i, pin:/^(in)$/i };
+function timeCols(headers){
+  const H = headers.map(h => String(h ?? "").replace(/\s+/g, " ").trim()), f = re => { const i = H.findIndex(h => re.test(h)); return i < 0 ? null : i; };
+  let i = f(TC.start), o = f(TC.end), bs = f(TC.bout), be = f(TC.bin); const po = f(TC.pout), pi = f(TC.pin);
+  if(i != null && o != null){ if(bs == null && po != null) bs = po; if(be == null && pi != null) be = pi; }   // Start … Finish present → plain Out / In are the break
+  else { if(i == null) i = pi; if(o == null) o = po; }
+  return {in:i, out:o, bs, be};
+}
 function parseTimeVal(v){
   if(v == null || v === "") return null;
   if(typeof v === "number"){ const f = v % 1; return Math.floor(f * 1440 + 1e-6) % 1440; }
@@ -2046,9 +2060,25 @@ const attNames = v => String(v ?? "").split(",").map(attKey).filter(Boolean);
 function matchEmp(idv, namev){
   const id = String(idv ?? "").trim().toUpperCase();
   if(id){ let e = E().find(x => (x.empNo||"").toUpperCase() === id); if(e) return e; const d = digits(id); if(d){ e = E().find(x => digits(x.empNo) === d); if(e) return e; } }
+  const k = attKey(namev); if(k){ const live = E().filter(x => !x.system && x.status !== "Resigned"), byAtt = live.filter(x => attNames(x.attName).includes(k)); if(byAtt.length === 1) return byAtt[0]; }
   const n = normName(namev); if(n) return E().find(x => normName(x.name) === n) || null;
   return null;
 }
+// rows the file couldn't match: HR picks the employee (remembered as the "name on attendance machine")
+const umKey = (idv, namev) => [String(idv ?? "").trim(), String(namev ?? "").trim()].filter(Boolean).join(" · ") || "(blank)";
+function pickEmp(P, idv, namev){ const a = P.assign?.[umKey(idv, namev)]; if(a === "skip") return null; return (a && emp(a)) || matchEmp(idv, namev); }
+function umSuggest(key){ const k = attKey(key.split(" · ").pop()); if(!k) return null; const c = E().filter(e => !e.system && e.status !== "Resigned" && (attKey(e.name.split(" ")[0]) === k || attKey(e.name).startsWith(k) || attKey(e.name).includes(k))); return c.length === 1 ? c[0] : null; }
+function unmatchedPicker(P, res){
+  if(!res.unmatched.length && !Object.keys(P.assign || {}).length) return "";
+  const keys = [...new Set([...res.unmatched.map(([k]) => k), ...Object.keys(P.assign || {})])], cnt = Object.fromEntries(res.unmatched), pool = E().filter(e => !e.system && e.status !== "Resigned").sort((a,b) => a.name.localeCompare(b.name));
+  return `<div><h3 class="sub">Names in the file</h3><p class="small muted">These names don't match an employee yet (by Employee ID, the profile's <b>name on attendance machine</b>, or full name). Pick who they are — the HRM saves the name on that profile so it matches automatically next time.</p>
+    <div class="tw" style="border:1px solid var(--line);border-radius:10px"><table class="t rt"><thead><tr><th>In the file</th><th class="r">Rows</th><th>Employee</th></tr></thead><tbody>
+    ${keys.map(k => { const a = P.assign?.[k], sg = !a ? umSuggest(k) : null; return `<tr><td data-l="In the file"><b style="font-weight:600">${esc(k)}</b></td><td data-l="Rows" class="r num">${cnt[k] || "✓"}</td>
+      <td data-l="Employee"><select data-attassign="${esc(k)}" aria-label="Employee for ${esc(k)}"><option value="skip" ${!a || a === "skip" ? "selected" : ""}>— not imported —</option>${pool.map(e => `<option value="${e.id}" ${a === e.id ? "selected" : ""}>${esc(e.name)} · ${esc(e.empNo)}</option>`).join("")}</select>${sg ? ` <button class="btn sm link" type="button" data-act="att-suggest" data-id="${esc(k)}" data-v="${esc(sg.id)}">Use ${esc(sg.name)}?</button>` : ""}</td></tr>`; }).join("")}
+    </tbody></table></div></div>`;
+}
+// names HR linked by hand → saved on the profile as the attendance-machine name
+const attLinks = P => Object.entries(P.assign || {}).filter(([k, v]) => v && v !== "skip" && emp(v)).map(([k, v]) => ({empId:v, name:k.split(" · ").pop()})).filter(l => attKey(l.name) && !/^\d+$/.test(l.name) && !attNames(emp(l.empId)?.attName).includes(attKey(l.name)));
 /* Attendance import formats
    F1  fingerprint machine export (Denpasar & Surabaya): sheet "Attendance Details" = one row per scan (ID, Name, Att.Type, Att.Time).
        Scans are paired in time order (in, out, in, out…): first = check-in, last = check-out, gaps between pairs = breaks.
@@ -2126,6 +2156,7 @@ function attHeader(rows, kind){
     const H = rows[i].map(c => String(c).replace(/\s+/g, " ").trim()), col = {};
     H.forEach((h, j) => { for(const [k, re] of Object.entries(ATT_COLS)) if(col[k] == null && re.test(h)) col[k] = j; });
     const idx = H.findIndex(h => /^id$/i.test(h)); if(idx >= 0) col.id = idx;           // "ID", not "Device ID"
+    if(kind !== "f1"){ const tc = timeCols(H); for(const k of ["in","out","bs","be"]) if(tc[k] != null) col[k] = tc[k]; else if(k === "bs" || k === "be") delete col[k]; }
     const ok = kind === "f1" ? (col.time != null && (col.id != null || col.name != null)) : (col.date != null && col.in != null && (col.id != null || col.name != null));
     if(ok) return {hi:i, col};
   }
@@ -2204,8 +2235,8 @@ function buildStructured(P){
     for(const r of data){
       total++; const idv = col.id != null ? r[col.id] : "", namev = col.name != null ? r[col.name] : "";
       const date = parseDateVal(r[col.date], P.dmy); if(!date){ bad++; continue; }
-      const e = matchEmp(idv, namev);
-      if(!e){ const key = `${idv || ""}${namev ? " · " + namev : ""}`.trim() || "(blank)"; unmatched.set(key, (unmatched.get(key) || 0) + 1); continue; }
+      const e = pickEmp(P, idv, namev);
+      if(!e){ const key = umKey(idv, namev); unmatched.set(key, (unmatched.get(key) || 0) + 1); continue; }
       const ti = parseTimeVal(r[col.in]), to = col.out != null ? parseTimeVal(r[col.out]) : null;
       const bs = col.bs != null ? parseTimeVal(r[col.bs]) : null, be = col.be != null ? parseTimeVal(r[col.be]) : null;
       const bm = col.bm != null && String(r[col.bm]).trim() !== "" ? Number(r[col.bm]) || 0 : 0;
@@ -2226,25 +2257,37 @@ function autoMap(){
   let hi = 0; for(let i = 0; i < Math.min(15, rows.length); i++){ const r = rows[i].filter(c => String(c).trim() !== ""); if(r.length >= 3 && r.filter(c => typeof c === "string" && isNaN(Number(c))).length >= 2){ hi = i; break; } }
   P.hi = hi; P.headers = rows[hi].map((h,i) => String(h).trim() || `Column ${i+1}`); P.map = {};
   P.headers.forEach((h,i) => { for(const [k,re] of Object.entries(MAPS)) if(P.map[k] == null && re.test(h.replace(/\s+/g," ").trim())) P.map[k] = i; });
+  const tc = timeCols(P.headers); for(const k of ["in","out","bs","be"]) if(tc[k] != null) P.map[k] = tc[k];
+  if(P.map.in != null && P.map.dt === P.map.in) delete P.map.dt;
+  P.assign = P.assign || {};
 }
 function buildAtt(){
   const P = S.ui.attParse, rows = P.sheets[P.sheet][1].slice(P.hi + 1), M = P.map, mode = M.in != null ? "inout" : "punch";
   const recs = new Map(), unmatched = new Map(); let bad = 0, total = 0;
+  const tv = k => r => M[k] != null ? parseTimeVal(r[M[k]]) : null;
   for(const r of rows){
     if(!r.some(c => String(c).trim() !== "")) continue; total++;
     const idv = M.id != null ? r[M.id] : "", namev = M.name != null ? r[M.name] : "";
     const dateSrc = M.date != null ? r[M.date] : r[M.dt];
     const date = parseDateVal(dateSrc, P.dmy);
     if(!date){ bad++; continue; }
-    const e = matchEmp(idv, namev);
-    if(!e){ const key = `${idv || ""}${namev ? " · " + namev : ""}`.trim() || "(blank)"; unmatched.set(key, (unmatched.get(key)||0) + 1); continue; }
-    const k = e.id + "|" + date, cur = recs.get(k) || {empId:e.id, date, ins:[], outs:[]};
-    if(mode === "inout"){ const i = parseTimeVal(r[M.in]), o = M.out != null ? parseTimeVal(r[M.out]) : null; if(i != null) cur.ins.push(i); if(o != null) cur.outs.push(o); }
+    const e = pickEmp(P, idv, namev);
+    if(!e){ const key = umKey(idv, namev); unmatched.set(key, (unmatched.get(key)||0) + 1); continue; }
+    const k = e.id + "|" + date, cur = recs.get(k) || {empId:e.id, date, ins:[], outs:[], brk:0, pun:[]};
+    if(mode === "inout"){ const i = tv("in")(r), o = tv("out")(r), bs = tv("bs")(r), be = tv("be")(r);
+      if(i != null) cur.ins.push(i); if(o != null) cur.outs.push(o);
+      if(bs != null && be != null && be > bs) cur.brk += be - bs;
+      for(const t of [i, bs, be, o]) if(t != null) cur.pun.push(t); }
     else { const t = parseTimeVal(M.dt != null ? r[M.dt] : null) ?? (typeof dateSrc === "number" && dateSrc % 1 ? parseTimeVal(dateSrc) : parseTimeVal(String(dateSrc).split(/\s+/)[1])); if(t != null) cur.ins.push(t); }
     recs.set(k, cur);
   }
-  const out = [...recs.values()].map(x => { if(mode === "punch"){ const all = x.ins.sort((a,b) => a-b); return {empId:x.empId, date:x.date, in:hhmm(all[0]), out:all.length > 1 ? hhmm(all[all.length-1]) : ""}; }
-    return {empId:x.empId, date:x.date, in:x.ins.length ? hhmm(Math.min(...x.ins)) : "", out:x.outs.length ? hhmm(Math.max(...x.outs)) : ""}; });
+  const brkCols = M.bs != null || M.be != null;
+  const out = [...recs.values()].map(x => {
+    if(mode === "punch"){ const all = x.ins.sort((a,b) => a-b); return {empId:x.empId, date:x.date, in:hhmm(all[0]), out:all.length > 1 ? hhmm(all[all.length-1]) : ""}; }
+    const i = x.ins.length ? Math.min(...x.ins) : null, o = x.outs.length ? Math.max(...x.outs) : null;
+    const r = {empId:x.empId, date:x.date, in:i != null ? hhmm(i) : "", out:o != null ? hhmm(o) : ""};
+    if(brkCols){ Object.assign(r, {brk:x.brk, work:i != null && o != null && o > i ? Math.max(0, o - i - x.brk) : 0, n:x.pun.length, miss:i == null || o == null, src:"SHEET"}); }
+    return r; });
   const dates = out.map(x => x.date).sort();
   return {mode, recs:out, unmatched:[...unmatched.entries()], bad, total, from:dates[0], to:dates[dates.length-1], employees:new Set(out.map(x => x.empId)).size};
 }
@@ -2281,11 +2324,18 @@ function uploadPanel(){
       ${sample.length ? `<div class="tw" style="border:1px solid var(--line);border-radius:10px"><table class="t rt"><thead><tr><th>Employee</th><th>Date</th><th>In</th><th>Out</th><th class="r">Break</th><th class="r">Worked</th></tr></thead><tbody>
         ${sample.map(r => `<tr><td data-l="Employee">${esc(nm(r.empId))}</td><td data-l="Date">${fmt(r.date)}</td><td data-l="In" class="num">${esc(r.in || "—")}</td><td data-l="Out" class="num">${r.out ? esc(r.out) : `<span class="down">missing</span>`}</td><td data-l="Break" class="r num">${r.brk ? dur(r.brk) : "—"}</td><td data-l="Worked" class="r num">${dur(r.work)}${r.miss && isMachine(P.fmt) ? ` <span class="small down" title="${r.n} scans">!</span>` : ""}</td></tr>`).join("")}</tbody></table></div>
         <p class="small muted">Showing ${sample.length} of ${res.recs.length} day records.</p>` : ""}
-      ${res.unmatched.length && !isMachine(P.fmt) ? `<div class="note warn">${ic("alert")}<div><b>Not matched to any employee:</b> ${res.unmatched.slice(0,12).map(([k,n]) => `${esc(k)} (${n})`).join(", ")}${res.unmatched.length > 12 ? "…" : ""}. These rows are skipped — check the Employee ID.</div></div>` : ""}
+      ${!isMachine(P.fmt) ? unmatchedPicker(P, res) : ""}
       ${res.bad && P.fmt !== "wfh" ? `<p class="small muted">${res.bad} row(s) without a readable date/time were skipped.</p>` : ""}
       ${!ok && !res.headerMissing ? `<ul class="errs"><li>${isMachine(P.fmt) ? "Link at least one machine user to an employee." : "No rows could be read."}</li></ul>` : ""}
       <div class="row end"><button class="btn" type="button" data-act="att-upclose">Cancel</button><button class="btn pri" type="button" data-act="att-import" ${ok?"":"disabled"}>${ic("check")}Import ${res.recs.length} records</button></div>
     </div></section>`;
+}
+// preview cells as people read them (Excel keeps dates as day numbers and times as fractions of a day)
+function cellShow(v, i, M, dmy){
+  if(typeof v !== "number") return v;
+  if(i === M.date || (i === M.dt && v > 20000)){ const d = parseDateVal(v, dmy); const t = v % 1 ? hhmm(parseTimeVal(v)) : ""; return d ? `${fmt(d)}${t ? " " + t : ""}` : v; }
+  if(["in","out","bs","be","dt"].some(k => M[k] === i) && v >= 0 && v < 1) return hhmm(parseTimeVal(v));
+  return v;
 }
 function otherPanel(){
   const P = S.ui.attParse, res = buildAtt(), rows = P.sheets[P.sheet][1], H = P.headers, M = P.map;
@@ -2295,12 +2345,14 @@ function otherPanel(){
   return `<section class="card"><div class="card-h"><span class="tile c5">${ic("doc")}</span><h2>${esc(P.file)}<br><span class="small muted" style="font-family:var(--f-body);font-weight:500">${res.total} data rows · ${res.mode === "inout" ? "check-in / check-out per row" : "one row per scan"}</span></h2>${close}</div>
     <div class="card-b stack">
       ${P.sheets.length > 1 ? `<label class="f" style="max-width:260px"><span>Sheet</span><select id="att-sheet">${P.sheets.map(([n],i) => `<option value="${i}" ${P.sheet===i?"selected":""}>${esc(n)}</option>`).join("")}</select></label>` : ""}
-      <div><h3 class="sub">Match the columns</h3><div class="fields">${sel("id","Employee ID")}${sel("name","Name")}${sel("date","Date", M.dt == null)}${sel("in","Check in", false)}${sel("out","Check out")}${sel("dt","Date & time of scan")}
+      <div><h3 class="sub">Match the columns</h3><div class="fields">${sel("id","Employee ID")}${sel("name","Name")}${sel("date","Date", M.dt == null)}${sel("in","Check in", false)}${sel("bs","Break out")}${sel("be","Back from break")}${sel("out","Check out")}${sel("dt","Date & time of scan")}
         <label class="f"><span>Date format in file</span><select id="att-dmy"><option value="1" ${P.dmy?"selected":""}>Day/Month/Year</option><option value="0" ${!P.dmy?"selected":""}>Month/Day/Year</option></select></label></div></div>
-      <div class="tw" style="border:1px solid var(--line);border-radius:10px"><table class="t"><thead><tr>${H.map(h => `<th>${esc(h)}</th>`).join("")}</tr></thead><tbody>${rows.slice(P.hi+1, P.hi+5).map(r => `<tr>${H.map((h,i) => `<td>${esc(r[i])}</td>`).join("")}</tr>`).join("")}</tbody></table></div>
+      <div class="tw" style="border:1px solid var(--line);border-radius:10px"><table class="t"><thead><tr>${H.map(h => `<th>${esc(h)}</th>`).join("")}</tr></thead><tbody>${rows.slice(P.hi+1, P.hi+5).filter(r => r.some(c => String(c).trim() !== "")).map(r => `<tr>${H.map((h,i) => `<td>${esc(cellShow(r[i], i, M, P.dmy))}</td>`).join("")}</tr>`).join("")}</tbody></table></div>
+      ${unmatchedPicker(P, res)}
+      ${res.recs.length && M.in != null ? `<div class="tw" style="border:1px solid var(--line);border-radius:10px"><table class="t rt"><thead><tr><th>Employee</th><th>Date</th><th>In</th><th>Out</th><th class="r">Break</th><th class="r">Worked</th></tr></thead><tbody>
+        ${res.recs.slice().sort((a,b) => (a.date + nm(a.empId)).localeCompare(b.date + nm(b.empId))).slice(0, 8).map(r => `<tr><td data-l="Employee">${esc(nm(r.empId))}</td><td data-l="Date">${fmt(r.date)}</td><td data-l="In" class="num">${esc(r.in || "—")}</td><td data-l="Out" class="num">${r.out ? esc(r.out) : `<span class="down">missing</span>`}</td><td data-l="Break" class="r num">${r.brk ? dur(r.brk) : "—"}</td><td data-l="Worked" class="r num">${r.work != null ? dur(r.work) : "—"}</td></tr>`).join("")}</tbody></table></div>` : ""}
       <div class="grid kpis k4">${kpi("Day records", res.recs.length, res.from ? `${fmt(res.from)} – ${fmt(res.to)}` : "—")}${kpi("Employees matched", res.employees, `of ${activeE().length} active`)}${kpi("Unmatched rows", res.unmatched.reduce((s,x) => s + x[1], 0), `${res.unmatched.length} ID(s)`, res.unmatched.length ? "warn" : "")}${kpi("Skipped rows", res.bad, "no readable date", res.bad ? "warn" : "")}</div>
-      ${res.unmatched.length ? `<div class="note warn">${ic("alert")}<div><b>Not matched to any employee:</b> ${res.unmatched.slice(0,12).map(([k,n]) => `${esc(k)} (${n})`).join(", ")}${res.unmatched.length > 12 ? "…" : ""}. These rows will be skipped.</div></div>` : ""}
-      ${!ok ? `<ul class="errs"><li>No rows could be read. Check that the Date and Check in (or scan time) columns are selected.</li></ul>` : ""}
+      ${!ok ? `<ul class="errs"><li>${res.unmatched.length && res.total - res.bad > 0 ? "The rows were read, but no name matches an employee yet — pick the employee for each name above." : "No rows could be read. Check that the Date and Check in (or scan time) columns are selected."}</li></ul>` : ""}
       <div class="row end"><button class="btn" type="button" data-act="att-upclose">Cancel</button><button class="btn pri" type="button" data-act="att-import" ${ok?"":"disabled"}>${ic("check")}Import ${res.recs.length} records</button></div>
     </div></section>`;
 }
@@ -2308,7 +2360,7 @@ async function importAtt(){
   const P = S.ui.attParse, res = attResult(P); if(!res.recs.length) return;
   const groups = new Map(); for(const r of res.recs){ const k = r.empId + "_" + r.date.slice(0,7); (groups.get(k) || groups.set(k, []).get(k)).push(r); }
   const now = new Date().toISOString(), log = {id:uid("ai"), file:P.file, fmt:P.fmt, office:P.office || "", by:S.me, at:now, rows:res.total, records:res.recs.length, employees:res.employees, from:res.from, to:res.to, unmatched:res.unmatched.length};
-  const links = isMachine(P.fmt) ? res.machine.filter(m => m.empId && attKey(m.name) && !attNames(emp(m.empId)?.attName).includes(attKey(m.name))) : [];
+  const links = isMachine(P.fmt) ? res.machine.filter(m => m.empId && attKey(m.name) && !attNames(emp(m.empId)?.attName).includes(attKey(m.name))) : attLinks(P);
   const ok = await run(async () => {
     for(const [k, list] of groups){ const [empId, month] = k.split("_"); const cur = attDoc(empId, month); const doc = cur ? clone(cur) : {id:k, empId, month, days:{}};
       for(const r of list){ let d = {in:r.in || "", out:r.out || ""}; for(const f of ["work","brk","n","miss","src","wfh","note","mp"]) if(r[f] !== undefined && r[f] !== "" && r[f] !== false) d[f] = r[f];
