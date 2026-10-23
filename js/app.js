@@ -126,6 +126,14 @@ const isGM = () => role() === "gm";
 const isMgmt = () => isHR() || isGM();
 const reports = id => E().filter(e => e.supervisorId === id && e.status !== "Resigned");
 const isLead = () => isMgmt() || reports(S.me).length > 0;
+// everyone under a person: direct reports, their reports, and so on (a manager sees the supervisors' teams too)
+function teamAll(id){ const out = [], seen = new Set([id]); let q = [id];
+  while(q.length){ const nx = []; for(const x of q) for(const e of reports(x)) if(!seen.has(e.id)){ seen.add(e.id); out.push(e); nx.push(e.id); } q = nx; }
+  return out; }
+// whose profile a person may open: HR/GM all · leads their whole team · approvers the people whose requests they handle · everyone themselves
+function canViewEmp(id){ if(!id) return false; if(isMgmt() || id === S.me) return true;
+  if(teamAll(S.me).some(e => e.id === id)) return true;
+  return S.D.requests.some(r => r.empId === id && r.steps.some(st => st.approverId === S.me)); }
 const byRole = r => E().find(e => e.role === r && e.status !== "Resigned");
 const ini = id => (emp(id)?.name || "?").split(/\s+/).filter(Boolean).slice(0,2).map(w => w[0]).join("").toUpperCase();
 const hue = id => { let h = 0; for(const c of String(id)) h = (h*31 + c.charCodeAt(0)) % 997; return "c" + (h % 6 + 1); };
@@ -314,7 +322,7 @@ const dv = (k, n, d) => (S.drafts[k] && n in S.drafts[k]) ? S.drafts[k][n] : d;
    rd/<uid>, ph/<uid>   per-person read receipts and self-uploaded profile photo
    audit/<uid>/m/<yyyy-mm>  each person's own monthly audit trail
    requests, notifs, counters   shared working data (Contributors write) */
-const APP_VERSION = "4.4.2", SCHEMA = 2;
+const APP_VERSION = "4.5.0", SCHEMA = 2;
 const PRIVATE_FIELDS = ["phone","gender","birthDate","address","exitReason","contract","contracts","notes","quotaLog"];
 const SUB_COLS = ["employees","private","requests","candidates","tasks","reviews","reminders","notifs","announcements","attendance","attImports","backups","dec","links","rd","ph","sub","payslips","payruns","appraisals","kiosks","facestat"];
 const CORE_COLS = ["employees","requests","tasks","notifs","announcements","attendance"];
@@ -737,8 +745,7 @@ function navItems(){
   const n = S.me ? pendingFor(S.me).length : 0, openTasks = S.D.tasks.filter(t => t.status === "open" && t.supervisorId === S.me).length + apMine().length;
   const g = [["Overview", [["dashboard","Dashboard","grid"],["announcements","Announcements","mega",annUnread().length]]]];
   if(isMgmt()) g.push(["People", [["directory","Employees","users"],["recruitment","Recruitment","brief"],["attendance","Attendance","fp"],["reviews","Performance","star",openTasks],["reminders","Contracts & Reminders","clock"]]]);
-  else if(isLead()) g.push(["My Team", [["directory","Employees","users"],["reviews","Performance Reviews","star",openTasks]]]);
-  else g.push(["Company", [["directory","Employees Directory","users"]]]);
+  else if(isLead()) g.push(["My Team", [["directory","My Team","users"],["reviews","Performance Reviews","star",openTasks]]]);
   const time = []; if(isLead()) time.push(["approvals","Approvals","check",n]);
   time.push(["calendar","Team Calendar","cal"],["apply","Apply Request","plus"],["myrequests","My Requests","file"]);
   g.push(["Time Off & WFH", time]);
@@ -798,7 +805,7 @@ function userMenu(people){
 }
 function searchResults(){
   const q = S.q.trim().toLowerCase();
-  const people = E().filter(e => (e.name+" "+e.position+" "+e.dept+" "+e.empNo).toLowerCase().includes(q)).slice(0,6);
+  const people = E().filter(e => canViewEmp(e.id) && (e.name+" "+e.position+" "+e.dept+" "+e.empNo).toLowerCase().includes(q)).slice(0,6);
   const reqs = visibleRequests().filter(r => (r.no+" "+nm(r.empId)+" "+typeName(r)).toLowerCase().includes(q)).slice(0,5);
   return `<div class="pop" style="left:0;right:auto;width:100%">${people.length || reqs.length ? `
     ${people.length?`<div class="label" style="padding:12px 14px 4px">Employees</div>${people.map(e => `<button class="res" type="button" data-act="open-emp" data-id="${e.id}">${av(e.id,"sm")}<span><b style="font-weight:600">${esc(e.name)}</b><br><span class="small muted">${esc(e.position)} · ${esc(e.dept)}</span></span></button>`).join("")}`:""}
@@ -815,19 +822,42 @@ function visibleRequests(){
 /* ================= shared components ================= */
 const statusPill = r => r.status === "pending" ? `<span class="pill p-pending">Pending · ${r.current+1}/${r.steps.length}</span>` :
   `<span class="pill p-${r.status}">${r.status[0].toUpperCase()+r.status.slice(1)}</span>`;
+// approval journey: vertical timeline with progress, who's next, how long it's been waiting and whether the approver is away
 function chain(r, preview){
-  const head = `<li class="ok"><span class="nd">${esc(ini(r.empId))}</span><div class="tx"><b>${esc(nm(r.empId))}</b><span>Requester</span>${r.createdAt?`<em>Submitted ${fmt(r.createdAt.slice(0,10))}</em>`:""}</div></li>`;
-  return `<ol class="chain" aria-label="Approval flow">${head}${r.steps.map((s,i) => {
-    let c = "wait", t = "Waiting";
-    if(preview){ c = "plan"; t = `Step ${i+1}`; }
-    else if(s.status === "approved"){ c = "ok"; t = "Approved · " + fmt(s.at?.slice(0,10)); }
-    else if(s.status === "rejected"){ c = "no"; t = "Rejected · " + fmt(s.at?.slice(0,10)); }
-    else if(s.status === "skipped" || r.status === "cancelled"){ c = "skip"; t = "Not needed"; }
-    else if(r.status === "pending" && i === r.current){ c = "cur"; t = "In review"; }
+  const t = today(), days = (a, b) => Math.max(0, Math.round((new Date(b) - new Date(a)) / 864e5));
+  const away = id => S.D.requests.find(x => x.empId === id && x.kind === "leave" && x.status === "approved" && x.start <= t && x.end >= t);
+  const n = r.steps.length, done = r.steps.filter(s => s.status === "approved").length;
+  const fin = r.status === "approved" ? "ok" : r.status === "rejected" ? "no" : r.status === "cancelled" ? "skip" : "";
+  const segs = r.steps.map((s, i) => `<i class="${preview ? "" : s.status === "approved" ? "ok" : s.status === "rejected" ? "no" : r.status === "pending" && i === r.current ? "cur" : ""}"></i>`).join("");
+  const cur = r.steps[r.current];
+  const headline = preview ? (n === 1 ? `${esc(first(r.steps[0].approverId))} decides on this request` : n ? `${n} approvals · starts with ${esc(first(r.steps[0].approverId))}` : "No approver found yet")
+    : r.status === "approved" ? `Fully approved${r.steps.at(-1)?.at ? ` · ${fmt(r.steps.at(-1).at.slice(0,10))}` : ""}`
+    : r.status === "rejected" ? "Rejected" : r.status === "cancelled" ? "Cancelled"
+    : cur ? `Step ${r.current + 1} of ${n} · waiting for ${esc(first(cur.approverId))}` : "In progress";
+  const node = (cls, inner, body) => `<li class="${cls}"><span class="fl-nd">${inner}</span><div class="fl-tx">${body}</div></li>`;
+  const me0 = node("ok", av(r.empId, "sm"), `<div class="fl-top"><b>${esc(nm(r.empId))}${r.empId === S.me ? ` <span class="muted">(you)</span>` : ""}</b><em class="fl-chip ok">${preview ? "Requester" : "Submitted"}</em></div><span class="fl-sub">${r.createdAt ? `Sent ${fmt(r.createdAt.slice(0,10))}` : "You send the request"}</span>`);
+  const steps = r.steps.map((s, i) => {
+    let c = "wait", chip = "Up next";
+    if(preview){ c = "plan"; chip = `Step ${i + 1}`; }
+    else if(s.status === "approved"){ c = "ok"; chip = "Approved"; }
+    else if(s.status === "rejected"){ c = "no"; chip = "Rejected"; }
+    else if(s.status === "skipped" || r.status === "cancelled" || r.status === "rejected"){ c = "skip"; chip = "Not needed"; }
+    else if(r.status === "pending" && i === r.current){ c = "cur"; chip = "In review"; }
+    const prevAt = i === 0 ? r.createdAt : r.steps[i - 1]?.at, w = c === "cur" && prevAt ? days(prevAt.slice(0,10), t) : null;
+    const ooo = (c === "cur" || c === "plan" || c === "wait") ? away(s.approverId) : null;
     const v = preview || !r.id ? null : verifyStep(r, i);
     const sig = v === "ok" ? `<span class="sig ok" title="Matches the approver's own signed decision">${ic("shield")}signed</span>` : v === "missing" || v === "mismatch" ? `<span class="sig bad" title="No matching signed decision from this approver">${ic("alert")}unverified</span>` : "";
-    return `<li class="${c}"><span class="nd">${esc(ini(s.approverId))}</span><div class="tx"><b>${esc(nm(s.approverId))}</b><span>${esc(s.label)}</span><em>${t}</em>${sig}${s.note && !preview?`<div class="nt">“${esc(s.note)}”</div>`:""}</div></li>`;
-  }).join("")}</ol>`;
+    const meta = [esc(s.label), s.at && (c === "ok" || c === "no") ? fmt(s.at.slice(0,10)) : "", w != null ? (w === 0 ? "waiting since today" : `waiting ${w} day${w === 1 ? "" : "s"}`) : ""].filter(Boolean).join(" · ");
+    return node(c, `${av(s.approverId, "sm")}<span class="fl-no">${c === "ok" ? ic("check") : c === "no" ? "✕" : i + 1}</span>`,
+      `<div class="fl-top"><b>${esc(nm(s.approverId))}</b><em class="fl-chip ${c}">${chip}</em></div><span class="fl-sub">${meta}</span>${sig}
+       ${ooo ? `<div class="fl-warn">${ic("alert")}On leave until ${fmt(ooo.end)} — the decision may take longer</div>` : ""}
+       ${s.note && !preview ? `<div class="fl-note">“${esc(s.note)}”</div>` : ""}`);
+  }).join("");
+  const endTxt = preview ? "Approved → added to the Team Calendar" : fin === "ok" ? "Done — it's on the Team Calendar" : fin === "no" ? "Closed — not approved" : fin === "skip" ? "Request cancelled" : "Final decision";
+  const end = node(`end ${fin}`, fin === "ok" ? ic("check") : fin === "no" ? "✕" : ic("cal"), `<div class="fl-top"><b>${endTxt}</b></div>`);
+  return `<div class="flow ${preview ? "preview" : ""}"><div class="fl-head"><span>${headline}</span>${n ? `<span class="fl-count">${preview ? `${n} step${n === 1 ? "" : "s"}` : `${done}/${n}`}</span>` : ""}</div>
+    <div class="fl-bar" aria-hidden="true">${segs}</div>
+    <ol class="fl-list" aria-label="Approval flow">${me0}${steps}${end}</ol></div>`;
 }
 function reqTable(list, opts={}){
   if(!list.length) return `<div class="empty"><b>No requests yet</b>${opts.empty||"Requests will appear here."}</div>`;
@@ -1034,7 +1064,7 @@ function vDashEmp(m){
   const time = card("Time off", "cal", "c5", `<div class="card-b kv"><div><span>Annual leave left</span><span class="num" style="font-size:1.3rem;font-weight:600">${a.avail}</span> / ${a.quota}</div><div><span>Sick leave used</span>${sick.used} day(s)</div><div><span>WFH this month</span>${wfh}${cfg().wfhMaxPerMonth?` / ${cfg().wfhMaxPerMonth}`:""} day(s)</div><div><span>Next holiday</span>${nextHol ? `${esc(nextHol.name)}, ${fmt(nextHol.date)}` : "—"}</div></div>
       ${mine.length ? `<div class="list">${mine.slice(0,3).map(r => `<button class="li res" type="button" data-act="open-req" data-id="${r.id}" style="border-top:1px solid var(--line)"><span class="grow">${esc(typeName(r))} · ${range(r.start,r.end)}</span>${statusPill(r)}</button>`).join("")}</div>` : ""}`,
     `<button class="btn link" type="button" data-act="go" data-v="apply">Request ${ic("right")}</button>`);
-  return dashHead(m, `<button class="btn" type="button" data-act="go" data-v="directory">${ic("users")}Directory</button><button class="btn pri" type="button" data-act="go" data-v="apply">${ic("plus")}New request</button>`) + annWidget(3) +
+  return dashHead(m, `<button class="btn" type="button" data-act="go" data-v="profile">${ic("user")}My profile</button><button class="btn pri" type="button" data-act="go" data-v="apply">${ic("plus")}New request</button>`) + annWidget(3) +
     `<div class="grid split">${emp1}${card("Coming up for me", "clock", "c2", reminderList(remindersFor(m), 5))}</div>
      <div class="grid split">${perf}${time}</div>
      ${card("Company celebrations", "users", "c6", eventsList(peopleEvents(30, activeE())), `<span class="tag">Next 30 days</span>`)}`;
@@ -1113,7 +1143,7 @@ function applySummary(){
       ${c.skipped.length ? `<p class="muted small">Not counted: ${c.skipped.map(esc).join(", ")}</p>` : ""}</div>
     ${b ? (b.unlimited ? `<div class="note">${ic("info")}<div>${esc(t.name)} has no quota limit${t.paid?"":" and is unpaid"}.</div></div>` :
       `<div class="note">${ic("info")}<div>${esc(t.name)} quota: <b class="num">${b.avail}</b> day(s) available → <b class="num">${b.avail - c.days}</b> after this request.</div></div>`) : ""}
-    <div><h3 style="margin-bottom:12px">Approval flow · ${steps.length} step${steps.length===1?"":"s"}</h3>${chain({empId:S.me, steps, status:"pending", current:-1}, true)}</div>
+    <div><h3 style="margin-bottom:10px">Approval journey</h3>${chain({empId:S.me, steps, status:"pending", current:-1}, true)}</div>
     ${show && errs.length ? `<ul class="errs">${errs.map(e => `<li>${esc(e)}</li>`).join("")}</ul>` : ""}
   </div>`;
 }
@@ -1164,7 +1194,7 @@ function mReq(id){
       ${r.kind==="leave" && LT()[r.type]?.doc ? `<div><span>Supporting document</span>${r.doc?"Provided":"Not provided"}</div>` : ""}
       <div style="grid-column:1/-1"><span>Reason</span>${esc(r.reason||"—")}</div>
     </div>
-    <div><h3 style="margin-bottom:12px">Approval flow</h3>${chain(r)}</div>
+    <div><h3 style="margin-bottom:10px">Approval journey</h3>${chain(r)}</div>
     ${myTurn ? `<form class="stack" data-draft="dec-${r.id}" data-submit="noop"><label class="f"><span>Note to ${esc(first(r.empId))} <span class="muted" style="font-weight:400">(required when rejecting)</span></span><textarea name="note" id="note-${r.id}" placeholder="e.g. Approved — please finish the handover before you leave.">${esc(dv("dec-"+r.id,"note",""))}</textarea></label>
       ${S.ui["err-"+r.id] ? `<ul class="errs"><li>${esc(S.ui["err-"+r.id])}</li></ul>` : ""}</form>` : ""}
     ${isHR() && r.status === "pending" && (!emp(r.steps[r.current]?.approverId) || emp(r.steps[r.current]?.approverId)?.status === "Resigned") ? `<div class="note warn">${ic("alert")}<div>The current approver is no longer active. <button class="btn link" type="button" data-act="reassign" data-id="${r.id}">Reassign this step to me</button></div></div>` : ""}
@@ -1268,9 +1298,9 @@ function vCalendar(){
 
 /* ---------- directory ---------- */
 function vDirectory(){
+  if(!isMgmt()) return vMyTeam();
   const q = (S.ui.dq||"").toLowerCase(), dept = S.ui.ddept || "", off = S.ui.doff || "", m = me();
   let list = E().filter(e => (!dept || e.division === dept) && (!off || e.office === off) && (S.ui.dformer || e.status !== "Resigned") && (e.name+" "+e.position+" "+e.empNo).toLowerCase().includes(q));
-  if(!isMgmt() && S.ui.dscope === "team") list = list.filter(e => e.supervisorId === m.id);
   list.sort((a,b) => (a.division||"").localeCompare(b.division||"") || a.name.localeCompare(b.name));
   const depts = cfg().divisions || [];
   return `<div class="page-h"><div><h1>Employees Directory</h1><p>${activeE().length} active employees across ${depts.length} divisions and ${(cfg().offices||[]).length} offices.${isHR()?" HRD can add employees here or hire them from Recruitment.":""}</p></div>
@@ -1288,15 +1318,39 @@ function vDirectory(){
     </tbody></table></div></section>`;
 }
 
+// supervisors & managers: only their own people, grouped by who they report to
+function vMyTeam(){
+  const m = me(), all = teamAll(m.id), q = (S.ui.dq||"").toLowerCase(), t = today();
+  const hit = e => !q || (e.name+" "+e.position+" "+e.empNo).toLowerCase().includes(q);
+  const away = id => S.D.requests.find(r => r.empId === id && r.status === "approved" && r.start <= t && r.end >= t);
+  const row = e => { const a = away(e.id), sub = reports(e.id).length;
+    return `<tr class="click" data-act="open-emp" data-id="${e.id}"><td class="wide">${who(e.id, e.position || "")}</td><td data-l="ID" class="nw">${esc(e.empNo)}</td><td data-l="Division">${esc(e.division||"—")}</td><td data-l="Office">${esc(e.office||"—")}</td>
+      <td data-l="Today">${a ? `<span class="pill ${a.kind==="wfh"?"p-info":"p-pending"}">${a.kind==="wfh" ? "WFH" : "On leave"} · until ${fmt(a.end)}</span>` : `<span class="pill p-active">In office</span>`}</td>
+      <td data-l="Status"><span class="pill ${e.status==="Probation"?"p-info":"p-active"}">${esc(e.status)}</span>${sub ? ` <span class="small muted">· leads ${sub}</span>` : ""}</td>
+      <td class="r"><button class="btn link" type="button" data-act="open-emp" data-id="${e.id}">Profile</button></td></tr>`; };
+  // groups: my direct reports first, then each supervisor under me with their own people
+  const leads = [m.id, ...all.filter(e => reports(e.id).length).map(e => e.id)];
+  const groups = leads.map(l => [l, reports(l).filter(hit)]).filter(([, l]) => l.length);
+  const onLeave = all.filter(e => away(e.id)?.kind === "leave").length, wfh = all.filter(e => away(e.id)?.kind === "wfh").length;
+  return `<div class="page-h"><div><h1>My Team</h1><p>${all.length} ${all.length === 1 ? "person reports" : "people report"} to you${leads.length > 1 ? `, directly or through ${leads.length - 1} supervisor${leads.length > 2 ? "s" : ""}` : ""}.</p></div></div>
+  <div class="grid kpis k4">${kpi("Team size", all.length, leads.length > 1 ? `${reports(m.id).length} direct · ${all.length - reports(m.id).length} via supervisors` : "direct reports")}${kpi("On leave today", onLeave, onLeave ? "approved leave" : "everyone's in")}${kpi("WFH today", wfh, "approved WFH")}${kpi("On probation", all.filter(e => e.status === "Probation").length, "reviews in Performance")}</div>
+  <section class="card"><div class="card-h"><input type="search" id="dq" placeholder="Search name, position or ID" value="${esc(S.ui.dq||"")}" style="max-width:320px"></div>
+    <div class="tw"><table class="t rt"><thead><tr><th>Employee</th><th>ID</th><th>Division</th><th>Office</th><th>Today</th><th>Status</th><th class="r"></th></tr></thead>
+    ${groups.map(([l, list]) => `<tbody><tr class="grp"><td colspan="7"><div class="grp-h">${av(l,"sm")}<b>${l === m.id ? "Reporting to you" : `Team of ${esc(nm(l))}`}</b><span class="muted small">${list.length} ${list.length === 1 ? "person" : "people"}${l === m.id ? "" : ` · ${esc(emp(l)?.position || "")}`}</span></div></td></tr>${list.map(row).join("")}</tbody>`).join("")
+      || `<tbody><tr><td colspan="7"><div class="empty">${all.length ? "No one in your team matches." : "No one reports to you yet. HRD sets supervisors on each employee's profile."}</div></td></tr></tbody>`}
+    </table></div></section>`;
+}
+
 /* ---------- profile ---------- */
 function vProfile(){
   const id = S.prm.id || S.me, e = emp(id); if(!e) return `<div class="card empty">Employee not found.</div>`;
+  if(!canViewEmp(id)) return `<div class="card empty"><b>Profile not available</b>You can see your own profile${isLead() ? " and the people in your team" : ""}. <button class="btn link" type="button" data-act="go" data-v="profile">Open my profile</button></div>`;
   const priv = canSeePrivate(id), tab = S.ui.ptab || "overview", self = id === S.me;
   const tabs = [["overview","Overview"],["contract","Contract"],["history","History & Notes"],["leave","Leave & Quota"],["attendance","Attendance"],["performance","Performance"],["payslips","Payslips"]].filter(([k]) => k === "overview" || (k === "payslips" ? (self || isPayroll()) && !e.system : priv));
   if(!tabs.some(t => t[0] === tab)) S.ui.ptab = "overview";
   const cs = contractState(e.contract), sup = e.supervisorId;
   const body = {overview:pOverview, contract:pContract, history:pHistory, leave:pLeave, attendance:pAttendance, performance:pPerformance, payslips:pPayslips}[S.ui.ptab||"overview"](e);
-  return `${!self ? `<div><button class="btn link" type="button" data-act="go" data-v="directory">${ic("left")}Employees Directory</button></div>` : ""}
+  return `${!self && isLead() ? `<div><button class="btn link" type="button" data-act="go" data-v="directory">${ic("left")}${isMgmt() ? "Employees Directory" : "My Team"}</button></div>` : ""}
   <section class="card"><div class="card-b row" style="gap:20px;align-items:center"><div class="avwrap">${av(e.id,"lg")}${canEditPhoto(e.id) ? `<label class="avbtn" title="Change photo"><input type="file" accept="image/*" data-photo="${e.id}" aria-label="Change profile photo">${ic("edit")}</label>` : ""}
       ${canEditPhoto(e.id) && e.photo ? `<button class="btn link small" type="button" data-act="photo-del" data-id="${e.id}" style="display:block;margin:6px auto 0">Remove</button>` : ""}</div>
     <div style="flex:1;min-width:220px"><h1>${esc(e.name)}</h1><p class="muted">${esc(e.position)} · ${esc(e.division || e.dept)}${e.office ? ` · ${ic("pinmap","inline")} ${esc(e.office)}` : ""}</p>
@@ -3839,6 +3893,7 @@ function render(){
     if(S.view === "system" && !realAdmin()) S.view = "dashboard";
     const views = {system:vSystem, attendance:vAttendance, announcements:vAnnouncements, dashboard:vDashboard, apply:vApply, myrequests:vMyRequests, profile:vProfile, approvals:vApprovals, calendar:vCalendar, directory:vDirectory, reviews:vReviews, recruitment:vRecruitment, payroll:vPayroll, payslips:vMyPayslips, reminders:vReminders, settings:vSettings};
     if(["recruitment","reminders","settings","attendance"].includes(S.view) && !isMgmt()) S.view = "dashboard";
+    if(S.view === "directory" && !isLead()) S.view = "dashboard";
     html = (views[S.view] || vDashboard)();
   }
   main.innerHTML = `<div class="wrap">${link || S.mode === "loading" ? "" : banners()}${html}</div>`;
