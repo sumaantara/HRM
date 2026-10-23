@@ -102,7 +102,19 @@ const rangeL = (a, b) => a === b ? fmt(a) : `${fmtS(a)} – ${fmt(b)}`;
 const ago = t => { if(!t) return ""; const m = Math.round((Date.now() - new Date(t)) / 6e4); if(m < 1) return "just now"; if(m < 60) return m + "m ago"; const h = Math.round(m/60); if(h < 24) return h + "h ago"; const d = Math.round(h/24); return d < 30 ? d + "d ago" : fmt(iso(new Date(t))); };
 const tenure = s => { if(!s) return "—"; const m = Math.max(0, Math.floor(diffDays(s, today()) / 30.44)); return m < 12 ? `${m} mo` : `${Math.floor(m/12)} yr ${m%12} mo`; };
 const months = s => s ? Math.floor(diffDays(s, today()) / 30.44) : 0;
-const holMap = office => Object.fromEntries((cfg().holidays||[]).filter(h => !h.offices?.length || !office || h.offices.includes(office)).map(h => [h.date, h.name]));
+// public-holiday calendars: every holiday belongs to Indonesia (ID) or Australia (AU); each employee follows one (Profile → Public holidays)
+const HCAL = {ID:"Indonesia", AU:"Australia"};
+const holCal = e => (e && HCAL[e.holCal]) ? e.holCal : "ID";
+const hCountry = h => HCAL[h.country] ? h.country : "ID";
+// holMap(employee) → that person's holidays · holMap("Office") → Indonesian holidays for that office · holMap() → every holiday (calendar view)
+const holMap = (who, cal) => { const isE = who && typeof who === "object", office = isE ? who.office : who, c = cal || (isE ? holCal(who) : who ? "ID" : null);
+  return Object.fromEntries((cfg().holidays||[]).filter(h => (!c || hCountry(h) === c) && (!h.offices?.length || !office || h.offices.includes(office))).map(h => [h.date, h.name])); };
+// official lists (SKB 3 Menteri for Indonesia incl. cuti bersama · Fair Work national days observed in every Australian state)
+const HOL_PRESET = {
+  ID:[["2026-01-01","Tahun Baru Masehi"],["2026-01-16","Isra Mikraj"],["2026-02-16","Cuti bersama Imlek","cuti"],["2026-02-17","Tahun Baru Imlek"],["2026-03-18","Cuti bersama Nyepi","cuti"],["2026-03-19","Hari Suci Nyepi"],["2026-03-20","Cuti bersama Idulfitri","cuti"],["2026-03-21","Idulfitri"],["2026-03-22","Idulfitri"],["2026-03-23","Cuti bersama Idulfitri","cuti"],["2026-03-24","Cuti bersama Idulfitri","cuti"],["2026-04-03","Wafat Yesus Kristus"],["2026-04-05","Paskah"],["2026-05-01","Hari Buruh"],["2026-05-14","Kenaikan Yesus Kristus"],["2026-05-15","Cuti bersama Kenaikan Yesus Kristus","cuti"],["2026-05-27","Iduladha"],["2026-05-28","Cuti bersama Iduladha","cuti"],["2026-05-31","Waisak"],["2026-06-01","Hari Lahir Pancasila"],["2026-06-16","Tahun Baru Islam"],["2026-08-17","Hari Kemerdekaan"],["2026-08-25","Maulid Nabi"],["2026-12-24","Cuti bersama Natal","cuti"],["2026-12-25","Natal"],
+    ["2027-01-01","Tahun Baru Masehi"],["2027-01-05","Isra Mikraj"],["2027-02-05","Cuti bersama Imlek","cuti"],["2027-02-06","Tahun Baru Imlek"],["2027-03-08","Hari Suci Nyepi"],["2027-03-09","Cuti bersama Idulfitri","cuti"],["2027-03-10","Idulfitri"],["2027-03-11","Idulfitri"],["2027-03-12","Cuti bersama Idulfitri","cuti"],["2027-03-15","Cuti bersama Idulfitri","cuti"],["2027-03-25","Cuti bersama Wafat Yesus Kristus","cuti"],["2027-03-26","Wafat Yesus Kristus"],["2027-03-28","Paskah"],["2027-05-01","Hari Buruh"],["2027-05-06","Kenaikan Yesus Kristus"],["2027-05-17","Iduladha"],["2027-05-18","Cuti bersama Iduladha","cuti"],["2027-05-19","Cuti bersama Waisak","cuti"],["2027-05-20","Waisak"],["2027-06-01","Hari Lahir Pancasila"],["2027-06-06","Tahun Baru Islam"],["2027-08-15","Maulid Nabi"],["2027-08-17","Hari Kemerdekaan"],["2027-12-24","Cuti bersama Natal","cuti"],["2027-12-25","Natal"],["2027-12-26","Isra Mikraj"]],
+  AU:[["2026-01-01","New Year's Day"],["2026-01-26","Australia Day"],["2026-04-03","Good Friday"],["2026-04-06","Easter Monday"],["2026-04-25","Anzac Day"],["2026-12-25","Christmas Day"],["2026-12-26","Boxing Day"],["2026-12-28","Boxing Day (additional day)"],
+    ["2027-01-01","New Year's Day"],["2027-01-26","Australia Day"],["2027-03-26","Good Friday"],["2027-03-29","Easter Monday"],["2027-04-25","Anzac Day"],["2027-12-25","Christmas Day"],["2027-12-27","Christmas Day (additional day)"],["2027-12-28","Boxing Day (additional day)"]]};
 function countDays(a, b, unit, office){
   const o = {days:0, skipped:[]}; if(!a || !b || b < a) return o;
   const hol = holMap(office); const d = parse(a), e = parse(b); let g = 0;
@@ -322,7 +334,7 @@ const dv = (k, n, d) => (S.drafts[k] && n in S.drafts[k]) ? S.drafts[k][n] : d;
    rd/<uid>, ph/<uid>   per-person read receipts and self-uploaded profile photo
    audit/<uid>/m/<yyyy-mm>  each person's own monthly audit trail
    requests, notifs, counters   shared working data (Contributors write) */
-const APP_VERSION = "4.5.1", SCHEMA = 2;
+const APP_VERSION = "4.6.0", SCHEMA = 2;
 const PRIVATE_FIELDS = ["phone","gender","birthDate","address","exitReason","contract","contracts","notes","quotaLog"];
 const SUB_COLS = ["employees","private","requests","candidates","tasks","reviews","reminders","notifs","announcements","attendance","attImports","backups","dec","links","rd","ph","sub","payslips","payruns","appraisals","kiosks","facestat"];
 const CORE_COLS = ["employees","requests","tasks","notifs","announcements","attendance"];
@@ -1054,7 +1066,7 @@ function vDashEmp(m){
   const mine = S.D.requests.filter(r => r.empId === m.id).sort((x,y) => y.createdAt.localeCompare(x.createdAt));
   const rv = S.D.reviews.filter(r => r.empId === m.id).sort((x,y) => y.submittedAt.localeCompare(x.submittedAt))[0];
   const ym = t.slice(0,7), wfh = mine.filter(r => r.kind === "wfh" && r.start.slice(0,7) === ym && ["pending","approved"].includes(r.status)).reduce((s,r) => s + r.days, 0);
-  const nextHol = (cfg().holidays||[]).filter(h => h.date >= t).sort((x,y) => x.date.localeCompare(y.date))[0];
+  const nextHol = (cfg().holidays||[]).filter(h => h.date >= t && hCountry(h) === holCal(m) && (!h.offices?.length || h.offices.includes(m.office))).sort((x,y) => x.date.localeCompare(y.date))[0];
   const emp1 = card("My employment", "user", "c1", `<div class="card-b kv">
       <div><span>Position</span>${esc(m.position)}</div><div><span>Department</span>${esc(m.dept)}</div><div><span>Supervisor</span>${m.supervisorId?esc(nm(m.supervisorId)):"—"}</div>
       <div><span>Employee ID</span>${esc(m.empNo)}</div><div><span>Joined</span>${fmt(m.joinDate)} · ${tenure(m.joinDate)}</div><div><span>Contract</span><span class="pill p-${cs.k}">${esc(m.contract?.type||"")} · ${esc(cs.t)}</span></div></div>`,
@@ -1113,7 +1125,7 @@ function evalApply(){
   const type = kind === "wfh" ? "wfh" : dv("apply","type", types[0]?.[0]);
   const f = {kind, type, start:dv("apply","start",""), end:dv("apply","end",""), reason:dv("apply","reason",""), doc:dv("apply","doc",false), location:dv("apply","location","")};
   const t = kind === "leave" ? LT()[type] : null, unit = t?.unit || "work";
-  const c = countDays(f.start, f.end, unit, m.office), steps = buildSteps(m, type), errs = [];
+  const c = countDays(f.start, f.end, unit, m), steps = buildSteps(m, type), errs = [];
   const b = kind === "leave" ? balance(m.id, type, Number((f.start || today()).slice(0,4))) : null;
   if(!f.start || !f.end) errs.push("Choose a start and end date.");
   else {
@@ -1279,17 +1291,18 @@ function vApprovals(){
 function vCalendar(){
   if(!S.ui.cal) S.ui.cal = today().slice(0,7);
   const [y,m] = S.ui.cal.split("-").map(Number), f = new Date(y, m-1, 1), start = new Date(f); start.setDate(1 - (f.getDay()+6)%7);
-  const hol = holMap(), t = today(), dept = S.ui.calDept || "", kind = S.ui.calKind || "all", depts = [...new Set(E().map(e => e.dept))].sort();
+  const holL = {}; for(const h of (cfg().holidays||[])) (holL[h.date] ||= []).push(h); const t = today(), dept = S.ui.calDept || "", kind = S.ui.calKind || "all", depts = [...new Set(E().map(e => e.dept))].sort();
   const reqs = S.D.requests.filter(r => ["approved","pending"].includes(r.status) && (!dept || emp(r.empId)?.dept === dept) && (kind === "all" || r.kind === kind));
   let cells = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].map(d => `<div class="dw">${d}</div>`).join(""); const d = new Date(start);
   for(let i = 0; i < 42; i++){ const s = iso(d), w = d.getDay(), inM = d.getMonth() === m-1;
-    const on = reqs.filter(r => r.start <= s && r.end >= s && (unitOf(r) === "calendar" || (w !== 0 && w !== 6 && !holMap(emp(r.empId)?.office)[s])));
-    cells += `<div class="d ${inM?"":"out"} ${w===0||w===6?"we":""} ${s===t?"today":""}"><span class="dn">${d.getDate()}</span>${hol[s]?`<span class="hol">${esc(hol[s])}</span>`:""}
+    const on = reqs.filter(r => r.start <= s && r.end >= s && (unitOf(r) === "calendar" || (w !== 0 && w !== 6 && !holMap(emp(r.empId))[s])));
+    cells += `<div class="d ${inM?"":"out"} ${w===0||w===6?"we":""} ${s===t?"today":""}"><span class="dn">${d.getDate()}</span>${(holL[s] || []).filter(h => !S.ui.calHol || S.ui.calHol === hCountry(h)).map(h => `<span class="hol ${hCountry(h) === "AU" ? "au" : ""} ${h.kind === "cuti" ? "cb" : ""}" title="${esc(HCAL[hCountry(h)])} · ${h.kind === "cuti" ? "Collective leave (cuti bersama)" : "Public holiday"}"><b>${hCountry(h)}</b> ${esc(h.name)}</span>`).join("")}
       ${on.map(r => `<button type="button" class="chip ${r.status==="pending"?"pd":r.kind==="wfh"?"wf":"lv"}" data-act="open-req" data-id="${r.id}" title="${esc(nm(r.empId))} · ${esc(typeName(r))} · ${r.status}" style="border:0;text-align:left">${esc(first(r.empId))}</button>`).join("")}</div>`;
     d.setDate(d.getDate()+1); if(i >= 34 && d.getMonth() !== m-1 && (i+1) % 7 === 0) break; }
   const monthList = reqs.filter(r => overlap(r.start, r.end, `${S.ui.cal}-01`, `${S.ui.cal}-31`)).sort((a,b) => a.start.localeCompare(b.start));
-  return `<div class="page-h"><div><h1>Team Calendar</h1><p>Blue is leave, green is work from home, dashed means still waiting for approval.</p></div>
-    <div class="row"><select id="cal-dept" aria-label="Department"><option value="">All departments</option>${depts.map(x => `<option ${dept===x?"selected":""}>${esc(x)}</option>`).join("")}</select>
+  return `<div class="page-h"><div><h1>Team Calendar</h1><p>Blue is leave, green is work from home, dashed means still waiting for approval. Public holidays are marked <b>ID</b> (Indonesia) or <b>AU</b> (Australia) — each employee follows one, set on their profile.</p></div>
+    <div class="row"><select id="cal-dept" aria-label="Department" style="width:auto"><option value="">All departments</option>${depts.map(x => `<option ${dept===x?"selected":""}>${esc(x)}</option>`).join("")}</select>
+    <select id="cal-hol" aria-label="Public holidays" style="width:auto"><option value="">ID + AU holidays</option><option value="ID" ${S.ui.calHol==="ID"?"selected":""}>Indonesian holidays</option><option value="AU" ${S.ui.calHol==="AU"?"selected":""}>Australian holidays</option></select>
     <div class="seg"><button type="button" data-act="calk" data-v="all" aria-pressed="${kind==="all"}">All</button><button type="button" data-act="calk" data-v="leave" aria-pressed="${kind==="leave"}">Leave</button><button type="button" data-act="calk" data-v="wfh" aria-pressed="${kind==="wfh"}">WFH</button></div></div></div>
   <section class="card" style="overflow:hidden"><div class="card-h"><h2>${MONL[m-1]} ${y}</h2><div class="row" style="gap:6px"><button class="ib" type="button" data-act="calm" data-v="-1" aria-label="Previous month">${ic("left")}</button><button class="btn sm" type="button" data-act="calm" data-v="0">Today</button><button class="ib" type="button" data-act="calm" data-v="1" aria-label="Next month">${ic("right")}</button></div></div>
     <div class="cal">${cells}</div></section>
@@ -1402,7 +1415,7 @@ function pOverview(e){
     <div><span>Employee ID</span>${esc(e.empNo)}</div><div><span>Position</span>${esc(e.position)}</div><div><span>Department</span>${esc(e.dept)}</div>
     <div><span>Direct supervisor</span>${e.supervisorId?`<button class="btn link" type="button" data-act="open-emp" data-id="${e.supervisorId}">${esc(nm(e.supervisorId))}</button>`:"—"}</div>
     <div><span>Join date</span>${fmt(e.joinDate)}</div><div><span>Length of service</span>${tenure(e.joinDate)}</div>
-    <div><span>Division</span>${esc(e.division||"—")}</div><div><span>Office</span>${esc(e.office||"—")}</div>
+    <div><span>Division</span>${esc(e.division||"—")}</div><div><span>Office</span>${esc(e.office||"—")}</div><div><span>Public holidays</span>${HCAL[holCal(e)]} (${holCal(e)})</div>
     <div><span>Job level</span>${esc(jobOf(e))}${e.role==="hrd"?" · HRD admin":""}</div><div><span>Team size</span>${reports(e.id).length} direct report(s)</div></div></section>
   <section class="card"><div class="card-h"><h2>Contact</h2></div><div class="card-b kv">
     <div><span>Email</span>${esc(e.email||"—")}</div><div><span>Phone</span>${esc(e.phone||"—")}</div>
@@ -1895,8 +1908,23 @@ function apLiveScore(k){
 /* ---------- attendance ---------- */
 const toMin = s => { if(!s) return null; const [h,m] = String(s).split(":").map(Number); return h*60 + (m||0); };
 const hhmm = n => n == null || isNaN(n) ? "" : `${pad(Math.floor(n/60) % 24)}:${pad(Math.round(n % 60))}`;
-const sched = () => Object.assign({start:"08:30", end:"17:30", grace:10, workdays:[1,2,3,4,5]}, cfg().schedule || {});
-const isWorkday = (s, office) => { const w = parse(s).getDay(); return (sched().workdays || [1,2,3,4,5]).includes(w) && !holMap(office)[s]; };
+const sched = () => Object.assign({start:"08:30", end:"17:30", grace:10, breakMin:60, workdays:[1,2,3,4,5]}, cfg().schedule || {});
+// leave buckets for the report: Annual · Bereavement · Marriage · Maternity/Paternity (= Total leave days) and, separately, Sick and Unpaid
+const LVB = {annual:"Annual", bereavement:"Bereavement", marriage:"Marriage", matpat:"Maternity / Paternity", other:"Other leave", sick:"Sick", unpaid:"Unpaid"};
+function lvBucket(type){
+  if(["annual","bereavement","marriage","sick","unpaid"].includes(type)) return type; if(type === "maternity" || type === "paternity") return "matpat";
+  const n = (LT()[type]?.name || type || "").toLowerCase();
+  return /sick|sakit/.test(n) ? "sick" : /unpaid|tanpa.?upah|tidak.?dibayar/.test(n) ? "unpaid" : /annual|tahunan/.test(n) ? "annual" : /bereave|duka|kematian/.test(n) ? "bereavement" : /marri|wedding|nikah/.test(n) ? "marriage" : /matern|patern|melahirkan|lahir/.test(n) ? "matpat" : "other";
+}
+// approved leave days inside a month, by bucket (workdays on the person's own holiday calendar; calendar-day types count every day)
+function leaveMonth(e, ym){
+  const o = {annual:0, bereavement:0, marriage:0, matpat:0, other:0, sick:0, unpaid:0}, from = `${ym}-01`, to = addDays(iso(new Date(Number(ym.slice(0,4)), Number(ym.slice(5,7)), 1)), -1);
+  for(const r of S.D.requests){ if(r.empId !== e.id || r.kind !== "leave" || r.status !== "approved" || !overlap(r.start, r.end, from, to)) continue;
+    const b = lvBucket(r.type), cal = unitOf(r) === "calendar";
+    for(let d = r.start < from ? from : r.start, end = r.end > to ? to : r.end; d <= end; d = addDays(d, 1)) if(cal || isWorkday(d, e)) o[b]++; }
+  o.total = o.annual + o.bereavement + o.marriage + o.matpat + o.other; return o;
+}
+const isWorkday = (s, who) => { const w = parse(s).getDay(); return (sched().workdays || [1,2,3,4,5]).includes(w) && !holMap(who)[s]; };
 const attDoc = (eid, ym) => S.D.attendance.find(a => a.empId === eid && a.month === ym);
 const monthsWithData = () => [...new Set(S.D.attendance.map(a => a.month))].sort();
 function coverage(ym){ let last = ""; for(const a of S.D.attendance) if(a.month === ym) for(const d of Object.keys(a.days||{})) if(d > last) last = d; return last; }
@@ -1910,12 +1938,13 @@ function officeCoverage(office, ym){
 const otMinDefault = () => { const v = ((S.R.payruns || []).find(x => x.id === "settings") || {}).otMin; return v === "" || v == null ? 30 : Number(v) || 0; };
 function computeAtt(e, ym, otMinDay){
   const sc = sched(), st = toMin(sc.start), en = toMin(sc.end), grace = Number(sc.grace)||0, doc = attDoc(e.id, ym), otFloor = otMinDay != null ? Number(otMinDay) || 0 : otMinDefault();
-  const r = {hasData:!!doc, expected:0, present:0, late:0, lateMin:0, early:0, missingOut:0, absent:0, leave:0, wfh:0, extra:0, mins:0, brk:0, workDays:0, inSum:0, inN:0, ot:0, otDays:0, days:[]};
+  const r = {hasData:!!doc, expected:0, present:0, late:0, lateMin:0, early:0, missingOut:0, absent:0, leave:0, wfh:0, extra:0, mins:0, brk:0, workDays:0, inSum:0, inN:0, ot:0, otDays:0, untaken:0, untakenDays:0, days:[]};
+  r.lv = leaveMonth(e, ym); const brkStd = Number(sc.breakMin ?? 60) || 0;
   const oc = officeCoverage(e.office, ym); if(!oc) return r;
   const from = oc.from, to = [oc.to, e.exitDate ? addDays(e.exitDate, 0) : "9999"].sort()[0];
   for(let s = from; s <= to; s = addDays(s, 1)){
     if(s.slice(0,7) !== ym) break; if(e.joinDate && s < e.joinDate) continue;
-    const rec = doc?.days?.[s], wd = isWorkday(s, e.office);
+    const rec = doc?.days?.[s], wd = isWorkday(s, e);
     const lv = S.D.requests.find(q => q.empId === e.id && q.status === "approved" && q.start <= s && q.end >= s);
     let status = "";
     const work = rec ? (rec.work != null ? Number(rec.work) : (rec.in && rec.out && toMin(rec.out) > toMin(rec.in) ? toMin(rec.out) - toMin(rec.in) : 0)) : 0;
@@ -1931,6 +1960,8 @@ function computeAtt(e, ym, otMinDay){
       // overtime (office scans only): time after the scheduled end on workdays, all worked time on days off; days under the minimum don't count
       { const ot = !wd ? work : (o != null && rec.in && rec.out && !rec.miss ? Math.max(0, o - en) : 0); if(ot && ot >= otFloor){ r.ot += ot; r.otDays++; } }
       if(i != null){ r.inSum += i; r.inN++; }
+      // untaken break: complete office days whose break scans add up to less than the standard break (only files that record breaks)
+      if(brkStd && rec.brk != null && rec.in && rec.out && !rec.miss && work > 0){ const short = Math.max(0, brkStd - (Number(rec.brk) || 0)); if(short){ r.untaken += short; r.untakenDays++; } }
     } else if(!wd) continue;
     else if(lv && lv.kind === "leave"){ status = "leave"; r.leave++; }
     else if(lv && lv.kind === "wfh"){ status = "wfh"; r.wfh++; }
@@ -1959,8 +1990,22 @@ function attSummary(list, ym){
   const rows = list.map(e => [e, computeAtt(e, ym)]).filter(([e,r]) => r.hasData);
   const sum = k => rows.reduce((s,[e,r]) => s + r[k], 0);
   const base = sum("expected") - sum("leave"), inN = sum("inN");
-  return {rows, rate: base > 0 ? (sum("present") + sum("wfh")) / base * 100 : null, late:sum("late"), lateMin:sum("lateMin"), absent:sum("absent"), missingOut:sum("missingOut"),
+  const lvRows = list.map(e => { const hit = rows.find(([x]) => x.id === e.id); return [e, hit ? hit[1] : computeAtt(e, ym)]; }).filter(([e, r]) => r.hasData || r.lv.total || r.lv.sick || r.lv.unpaid);
+  const lv = Object.fromEntries(Object.keys(LVB).concat("total").map(k => [k, lvRows.reduce((s2, [e, r]) => s2 + r.lv[k], 0)]));
+  return {rows, lvRows, lv, untaken:sum("untaken"), untakenDays:sum("untakenDays"), ot:sum("ot"), otDays:sum("otDays"), rate: base > 0 ? (sum("present") + sum("wfh")) / base * 100 : null, late:sum("late"), lateMin:sum("lateMin"), absent:sum("absent"), missingOut:sum("missingOut"),
     leave:sum("leave"), wfh:sum("wfh"), avgIn: inN ? hhmm(sum("inSum") / inN) : "—", hours: sum("mins") / 60, mins:sum("mins"), brk:sum("brk"), workDays:sum("workDays")};
+}
+function leaveTable(A, ym){
+  const rows = A.lvRows.slice().sort((a, b) => (b[1].lv.total + b[1].lv.sick + b[1].lv.unpaid) - (a[1].lv.total + a[1].lv.sick + a[1].lv.unpaid) || a[0].name.localeCompare(b[0].name));
+  const n = v => v ? v : `<span class="muted">0</span>`, sc = sched();
+  const cells = (lv, un, unD, ot, otD) => `<td data-l="Annual" class="r num">${n(lv.annual)}</td><td data-l="Bereavement" class="r num">${n(lv.bereavement)}</td><td data-l="Marriage" class="r num">${n(lv.marriage)}</td><td data-l="Maternity / Paternity" class="r num">${n(lv.matpat)}</td>
+    <td data-l="Total leave days" class="r num lv-tot"><b>${lv.total}</b>${lv.other ? ` <span class="small muted" title="Other leave types">+${lv.other} other</span>` : ""}</td><td data-l="Sick leave" class="r num">${n(lv.sick)}</td><td data-l="Unpaid leave" class="r num ${lv.unpaid ? "down" : ""}">${n(lv.unpaid)}</td>
+    <td data-l="Untaken break" class="r num" title="${unD} day(s)">${un ? dur(un) : `<span class="muted">—</span>`}</td><td data-l="Overtime" class="r num" title="${otD} day(s)">${ot ? (ot / 60).toFixed(1) + " h" : `<span class="muted">—</span>`}</td>`;
+  return `<section class="card"><div class="card-h"><span class="tile c4">${ic("cal")}</span><h2>Leave, breaks &amp; overtime · ${monthLabel(ym)}</h2><span class="tag">${rows.length} employee${rows.length === 1 ? "" : "s"}</span></div>
+    <div class="card-b small muted" style="padding-top:0">Leave days are approved requests in this month (workdays on each person's public-holiday calendar; maternity counts calendar days). Untaken break = how much shorter than the standard ${Number(sc.breakMin ?? 60)}-minute break someone's break scans were, on complete office days. Overtime = after ${esc(sc.end)} on workdays plus time worked on days off.</div>
+    <div class="tw"><table class="t rt lvt"><thead><tr><th>Employee</th><th class="r">Annual</th><th class="r">Bereave&shy;ment</th><th class="r">Marriage</th><th class="r">Mat. / Pat.</th><th class="r">Total leave days</th><th class="r">Sick leave</th><th class="r">Unpaid leave</th><th class="r">Untaken break</th><th class="r">Overtime</th></tr></thead><tbody>
+    ${rows.map(([e, r]) => `<tr class="click" data-act="open-emp" data-id="${e.id}" data-tab="leave"><td class="wide">${who(e.id, e.office || e.division || "")}</td>${cells(r.lv, r.untaken, r.untakenDays, r.ot, r.otDays)}</tr>`).join("") || `<tr><td colspan="10"><div class="empty">No leave, breaks or overtime this month.</div></td></tr>`}
+    ${rows.length ? `<tr class="lv-sum"><td class="wide"><b>Total</b></td>${cells(A.lv, A.untaken, A.untakenDays, A.ot, A.otDays)}</tr>` : ""}</tbody></table></div></section>`;
 }
 function monthNav(ym, act){
   return `<div class="row" style="gap:6px"><button class="ib" type="button" data-act="${act}" data-v="-1" aria-label="Previous month">${ic("left")}</button><span class="tag" style="font-size:.86rem;padding:8px 12px;min-width:132px;justify-content:center">${monthLabel(ym)}</span><button class="ib" type="button" data-act="${act}" data-v="1" aria-label="Next month">${ic("right")}</button></div>`;
@@ -1974,14 +2019,16 @@ function vAttendance(){
     <select id="att-office" aria-label="Office" style="width:auto"><option value="">All offices</option>${offices.map(o => `<option ${S.ui.attOffice===o?"selected":""}>${esc(o)}</option>`).join("")}</select>
     <select id="att-div" aria-label="Division" style="width:auto"><option value="">All divisions</option>${divs.map(o => `<option ${S.ui.attDiv===o?"selected":""}>${esc(o)}</option>`).join("")}</select></div></div>`;
   const upload = S.ui.attUp ? uploadPanel() : "";
-  if(!A.rows.length) return head + upload + filters + `<section class="card"><div class="empty"><b>No attendance data for ${monthLabel(ym)}</b>${isHR() ? "Upload the attendance export for this month to generate the report." : "HRD hasn't uploaded attendance for this month yet."}${monthsWithData().length ? `<br><span class="small">Months with data: ${monthsWithData().map(monthLabel).join(", ")}</span>` : ""}</div></section>` + importLog();
+  if(!A.rows.length) return head + upload + filters + `<section class="card"><div class="empty"><b>No attendance data for ${monthLabel(ym)}</b>${isHR() ? "Upload the attendance export for this month to generate the report." : "HRD hasn't uploaded attendance for this month yet."}${monthsWithData().length ? `<br><span class="small">Months with data: ${monthsWithData().map(monthLabel).join(", ")}</span>` : ""}</div></section>` + (A.lvRows.length ? leaveTable(A, ym) : "") + importLog();
   const kpis = `<div class="grid kpis">${kpi("Attendance rate", A.rate == null ? "—" : A.rate.toFixed(1)+"%", `data until ${fmt(cov)}`, A.rate != null && A.rate < 95 ? "warn" : "")}
     ${kpi("Average check-in", A.avgIn, `start ${esc(sc.start)}`)}${kpi("Late arrivals", A.late, `${Math.round(A.lateMin)} minutes in total`, A.late ? "warn" : "")}
     ${kpi("Unexcused absences", A.absent, "workdays with no punch, leave or WFH", A.absent ? "warn" : "")}${kpi("Missing punches", A.missingOut, "no check-in or check-out")}
     ${kpi("On leave · WFH", `${A.leave} · ${A.wfh}`, "approved or logged days")}
-    ${kpi("Hours worked", Math.round(A.mins / 60).toLocaleString(), A.workDays ? `avg ${dur(A.mins / A.workDays)} per day` : "breaks excluded")}${kpi("Break time", Math.round(A.brk / 60).toLocaleString() + " h", A.workDays ? `avg ${dur(A.brk / A.workDays)} per day` : "from punches between in and out")}</div>`;
+    ${kpi("Hours worked", Math.round(A.mins / 60).toLocaleString(), A.workDays ? `avg ${dur(A.mins / A.workDays)} per day` : "breaks excluded")}${kpi("Break time", Math.round(A.brk / 60).toLocaleString() + " h", A.workDays ? `avg ${dur(A.brk / A.workDays)} per day` : "from punches between in and out")}
+    ${kpi("Total leave days", A.lv.total, `Annual ${A.lv.annual} · Bereav. ${A.lv.bereavement} · Marriage ${A.lv.marriage} · Mat/Pat ${A.lv.matpat}${A.lv.other ? ` · Other ${A.lv.other}` : ""}`)}${kpi("Total sick leave", A.lv.sick, "approved sick days")}${kpi("Total unpaid leave", A.lv.unpaid, "approved unpaid days", A.lv.unpaid ? "warn" : "")}
+    ${kpi("Total untaken break", dur(A.untaken), `${A.untakenDays} day(s) under ${Number(sc.breakMin ?? 60)} min break`, A.untaken ? "warn" : "")}${kpi("Total overtime", (A.ot / 60).toFixed(1) + " h", `${A.otDays} day(s) · after ${esc(sc.end)} and days off`)}</div>`;
   // daily chart
-  const daysInM = []; for(let s = `${ym}-01`; s <= cov && s.slice(0,7) === ym; s = addDays(s,1)) if(isWorkday(s, S.ui.attOffice || null)) daysInM.push(s);
+  const daysInM = []; for(let s = `${ym}-01`; s <= cov && s.slice(0,7) === ym; s = addDays(s,1)) if(list.some(e => isWorkday(s, e))) daysInM.push(s);
   const day = s => { const c = {present:0, late:0, wfh:0, leave:0, absent:0}; for(const [e,r] of A.rows){ const d = r.days.find(x => x.date === s); if(d && c[d.status] !== undefined) c[d.status]++; } return c; };
   const dd = daysInM.map(s => [s, day(s)]), mx = Math.max(1, ...dd.map(([s,c]) => c.present + c.late + c.wfh + c.leave + c.absent));
   const colors = {present:"var(--accent)", late:"var(--warn)", wfh:"var(--t5f)", leave:"var(--t4f)", absent:"var(--bad)"};
@@ -1997,7 +2044,7 @@ function vAttendance(){
       <td data-l="Hours" class="r num" title="Average ${dur(r.avgWork)} per day">${(r.mins/60).toFixed(1)}</td><td data-l="Break" class="r num" title="Average ${dur(r.avgBrk)} per day">${(r.brk/60).toFixed(1)}</td><td data-l="Overtime" class="r num" title="${r.otDays} day(s)">${r.ot ? (r.ot/60).toFixed(1) : "—"}</td>
       <td data-l="Rate" class="r num"><b class="${r.rate != null && r.rate < 90 ? "down" : ""}">${r.rate == null ? "—" : r.rate.toFixed(0)+"%"}</b></td></tr>`).join("")}</tbody></table></div>
     ${list.filter(e => !attDoc(e.id, ym) && e.status !== "Resigned").length ? `<div class="card-b small muted" style="border-top:1px solid var(--line)">No data this month for: ${list.filter(e => !attDoc(e.id, ym) && e.status !== "Resigned").map(e => esc(e.name)).join(", ")}. Check that their Employee ID matches the attendance machine.</div>` : ""}</section>`;
-  return head + upload + filters + kpis + `<div class="grid split">${chart}${offCard}</div>` + tbl + importLog();
+  return head + upload + filters + kpis + `<div class="grid split">${chart}${offCard}</div>` + tbl + leaveTable(A, ym) + importLog();
 }
 function importLog(){
   const list = [...S.D.attImports].sort((a,b) => b.at.localeCompare(a.at)).slice(0,8);
@@ -2384,8 +2431,8 @@ async function download(filename, data){
 const csvCell = v => /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g,'""')}"` : String(v);
 function attCSV(){
   const ym = attMonth(), A = attSummary(attScope(), ym);
-  const head = ["Employee ID","Name","Office","Division","Department","Workdays","Present","Late","Late minutes","Absent","Leave","WFH","Missing punches","Average check-in","Hours worked","Break hours","Average hours per day","Average break per day (min)","Overtime hours","Attendance rate %"];
-  const lines = [head].concat(A.rows.map(([e,r]) => [e.empNo, e.name, e.office||"", e.division||"", e.dept, r.expected, r.present, r.late, r.lateMin, r.absent, r.leave, r.wfh, r.missingOut, r.avgIn, (r.mins/60).toFixed(2), (r.brk/60).toFixed(2), (r.avgWork/60).toFixed(2), Math.round(r.avgBrk), (r.ot/60).toFixed(2), r.rate == null ? "" : r.rate.toFixed(1)]));
+  const head = ["Employee ID","Name","Office","Division","Department","Workdays","Present","Late","Late minutes","Absent","Leave","WFH","Missing punches","Average check-in","Hours worked","Break hours","Average hours per day","Average break per day (min)","Overtime hours","Attendance rate %","Annual leave days","Bereavement leave days","Marriage leave days","Maternity/Paternity leave days","Other leave days","Total leave days","Sick leave days","Unpaid leave days","Untaken break (min)","Untaken break days","Public holidays"];
+  const lines = [head].concat(A.rows.map(([e,r]) => [e.empNo, e.name, e.office||"", e.division||"", e.dept, r.expected, r.present, r.late, r.lateMin, r.absent, r.leave, r.wfh, r.missingOut, r.avgIn, (r.mins/60).toFixed(2), (r.brk/60).toFixed(2), (r.avgWork/60).toFixed(2), Math.round(r.avgBrk), (r.ot/60).toFixed(2), r.rate == null ? "" : r.rate.toFixed(1), r.lv.annual, r.lv.bereavement, r.lv.marriage, r.lv.matpat, r.lv.other, r.lv.total, r.lv.sick, r.lv.unpaid, Math.round(r.untaken), r.untakenDays, holCal(e)]));
   return lines.map(l => l.map(csvCell).join(",")).join("\n");
 }
 function pAttendance(e){
@@ -3122,6 +3169,7 @@ function mEmp(){
   <div class="md-b"><div class="fields">${f("name","Full name","text","full")}${f("empNo","Employee ID")}${f("email","Work email","email")}${f("phone","Phone","tel")}${f("attName","Name on attendance machine")}
     <label class="f"><span>Gender</span><select name="gender"><option value="">—</option><option value="F" ${dv(k,"gender",base.gender)==="F"?"selected":""}>Female</option><option value="M" ${dv(k,"gender",base.gender)==="M"?"selected":""}>Male</option></select></label>
     ${f("position","Position")}${orgSelect(k,"dept","Department","departments",base.dept)}${orgSelect(k,"division","Division","divisions",base.division)}${orgSelect(k,"office","Office","offices",base.office)}
+    <label class="f"><span>Public holidays</span><select name="holCal">${Object.entries(HCAL).map(([c, l]) => `<option value="${c}" ${(dv(k,"holCal",base.holCal||"ID")) === c ? "selected" : ""}>${l} (${c})</option>`).join("")}</select><small>Which country's public holidays count as days off for this person.</small></label>
     <label class="f"><span>Direct supervisor</span><select name="supervisorId"><option value="">None</option>${E().filter(x => x.id !== e0?.id).map(x => `<option value="${x.id}" ${dv(k,"supervisorId",base.supervisorId||"")===x.id?"selected":""}>${esc(x.name)} — ${esc(x.position)}</option>`).join("")}</select></label>
     <label class="f"><span>Job level</span><select name="jobLevel"><option value="">Select job level</option>${[...new Set(JOBS().map(j => j.name).concat(base.jobLevel ? [base.jobLevel] : []))].map(j => `<option ${dv(k,"jobLevel",base.jobLevel||"")===j?"selected":""}>${esc(j)}</option>`).join("")}</select><small>Job levels and their access are managed in Settings → Organization.</small></label>
     ${isHR() ? `<label class="chk" style="align-self:end;padding-bottom:10px"><input type="checkbox" name="payroll" ${dv(k,"payroll",!!base.payroll)?"checked":""}><span><b>Payroll access</b><br><span class="small muted">Finance: uploads salary data and publishes payslips. Sees salaries, not other confidential HR data.</span></span></label>` : ""}
@@ -3197,7 +3245,8 @@ async function saveEmp(){
   const k = "emp-" + (S.modal.id || S.modal.cand || "new");
   const base = e0 || {name:fromCand?.name||"", email:fromCand?.email||"", phone:fromCand?.phone||"", position:fromCand?.position||"", dept:fromCand?.dept||"", gender:"", role:"employee", jobLevel:"Staff", supervisorId:"", joinDate:addDays(today(),7), status:"Probation", empNo:nextEmpNo()};
   const e = e0 ? clone(e0) : {id:uid("e"), contracts:[], notes:[]};
-  for(const n of ["name","empNo","email","phone","gender","position","dept","supervisorId","role","joinDate","birthDate","status","exitDate","exitReason","office","division","jobLevel","attName","address"]) e[n] = (dv(k,n,base[n]||"")||"").toString().trim();
+  for(const n of ["name","empNo","email","phone","gender","position","dept","supervisorId","role","joinDate","birthDate","status","exitDate","exitReason","office","division","jobLevel","attName","address","holCal"]) e[n] = (dv(k,n,base[n]||"")||"").toString().trim();
+  if(!HCAL[e.holCal]) e.holCal = "ID";
   if(isHR()) e.payroll = !!dv(k,"payroll",!!base.payroll);
   e.role = roleFor(e.jobLevel, isAdmin() ? !!dv(k,"hrAdmin",base.role==="hrd") : base.role === "hrd");
   if(!e.jobLevel){ S.ui.empErr = "Choose a job level."; render(); return; }
@@ -3345,11 +3394,16 @@ function vSettings(){
     const n = (p, l, h) => `<label class="f"><span>${l}</span><input type="number" min="0" max="365" data-cfg="${p}" value="${p.split(".").reduce((o,x)=>o?.[x], cfg())}" ${ro?"disabled":""}><small>${h}</small></label>`;
     body = `<div class="card-b fields">${n("wfhMaxPerMonth","WFH days per month","0 means no limit.")}${n("contractReminderDays","Contract reminder (days before end)","Contracts ending within this window show as reminders and on the dashboard.")}</div>`;
   } else if(tab === "holidays"){
-    const hs = [...(cfg().holidays||[])].sort((a,b) => a.date.localeCompare(b.date));
-    body = `<div class="card-b"><p class="muted">Public holidays and collective leave days (cuti bersama) aren't counted as leave days. Add them from the government's annual decree.</p></div>
-    <div class="list">${hs.map(h => `<div class="li"><span class="tag">${fmt(h.date)}</span><span class="grow">${esc(h.name)} <span class="small muted">· ${h.offices?.length ? h.offices.map(esc).join(", ") : "all offices"}</span></span>${ro?"":`<button class="ib plain" type="button" data-act="hol-del" data-i="${(cfg().holidays||[]).indexOf(h)}" aria-label="Remove ${esc(h.name)}">${ic("trash")}</button>`}</div>`).join("") || `<div class="empty">No holidays added yet.</div>`}</div>
+    const hc = S.ui.holTab || "ID", hs = [...(cfg().holidays||[])].filter(h => hCountry(h) === hc).sort((a,b) => a.date.localeCompare(b.date));
+    const years = [...new Set(hs.map(h => h.date.slice(0,4)))], users = activeE().filter(e => !e.system && holCal(e) === hc).length;
+    const missing = (HOL_PRESET[hc] || []).filter(([d]) => !hs.some(h => h.date === d)).length;
+    body = `<div class="card-b stack"><div class="row" style="justify-content:space-between"><div class="seg">${Object.entries(HCAL).map(([c, l]) => `<button type="button" data-act="holtab" data-v="${c}" aria-pressed="${hc === c}">${l} (${c})</button>`).join("")}</div><span class="small muted">${users} employee${users === 1 ? "" : "s"} follow the ${HCAL[hc]} calendar · set per person in Profile → Edit</span></div>
+      <p class="muted">${hc === "ID" ? "Indonesian public holidays and collective leave days (cuti bersama) from the SKB 3 Menteri. Neither is counted as a leave day or an absence. Delete a cuti bersama day if your company takes it out of annual leave instead." : "Australian national public holidays observed in every state (New Year, Australia Day, Easter, Anzac Day, Christmas, Boxing Day and their substitute days). Add state days yourself — e.g. Labour Day or King's Birthday — and tick the office they apply to."} Not counted as leave days or absences.</p>
+      ${ro || !missing ? "" : `<div class="note">${ic("cal")}<div><b>${missing} official ${HCAL[hc]} holiday${missing === 1 ? "" : "s"} for 2026–2027 not added yet.</b> <button class="btn sm" type="button" data-act="hol-preset" data-v="${hc}">${ic("plus")}Add the official ${hc} list</button></div></div>`}</div>
+    <div class="list">${years.map(y => `<div class="li" style="background:var(--sunk);font-weight:600">${y}<span class="small muted" style="font-weight:400">· ${hs.filter(h => h.date.startsWith(y)).length} day(s)</span></div>` + hs.filter(h => h.date.startsWith(y)).map(h => `<div class="li"><span class="tag">${fmt(h.date)} · ${DOWL[parse(h.date).getDay()].slice(0,3)}</span><span class="grow">${esc(h.name)}${h.kind === "cuti" ? ` <span class="pill p-info">cuti bersama</span>` : ""} <span class="small muted">· ${h.offices?.length ? h.offices.map(esc).join(", ") : "all offices"}</span></span>${ro?"":`<button class="ib plain" type="button" data-act="hol-del" data-i="${(cfg().holidays||[]).indexOf(h)}" aria-label="Remove ${esc(h.name)}">${ic("trash")}</button>`}</div>`).join("")).join("") || `<div class="empty">No ${HCAL[hc]} holidays added yet.</div>`}</div>
     ${ro ? "" : `<form class="card-b row" data-draft="hol" data-submit="hol" style="border-top:1px solid var(--line);align-items:flex-end"><label class="f" style="flex:0 1 180px"><span>Date</span><input type="date" name="date" value="${esc(dv("hol","date",""))}"></label>
-      <label class="f" style="flex:1 1 220px"><span>Name</span><input type="text" name="name" value="${esc(dv("hol","name",""))}" placeholder="e.g. Nyepi Day"></label><button class="btn pri" type="submit">Add holiday</button>
+      <label class="f" style="flex:1 1 220px"><span>Name</span><input type="text" name="name" value="${esc(dv("hol","name",""))}" placeholder="${hc === "AU" ? "e.g. King's Birthday" : "e.g. Hari Suci Nyepi"}"></label>
+      <label class="f" style="flex:0 1 190px"><span>Type</span><select name="kind"><option value="">Public holiday</option>${hc === "ID" ? `<option value="cuti" ${dv("hol","kind","") === "cuti" ? "selected" : ""}>Cuti bersama</option>` : ""}</select></label><button class="btn pri" type="submit">Add ${hc} holiday</button>
       <fieldset style="border:0;padding:0;margin:0;flex:1 1 100%"><legend class="small muted" style="margin-bottom:6px">Applies to (leave empty for all offices)</legend><div class="row">${(cfg().offices||[]).map(o => `<label class="chk"><input type="checkbox" name="offices" data-multi="1" value="${esc(o)}" ${(dv("hol","offices",[])||[]).includes(o)?"checked":""}><span>${esc(o)}</span></label>`).join("")}</div></fieldset></form>`}`;
   } else if(tab === "access"){
     const accts = [...S.D.employees].filter(e => e.status !== "Resigned").sort((a,b) => (b.admin?1:0) - (a.admin?1:0) || (b.role==="hrd"?1:0) - (a.role==="hrd"?1:0) || a.name.localeCompare(b.name));
@@ -3389,7 +3443,8 @@ function vSettings(){
     body = `<div class="card-b stack"><p class="muted">Used to calculate late arrivals, early leave and absences in the Attendance Report.</p>
       <div class="fields"><label class="f"><span>Work starts</span><input type="time" data-cfg="schedule.start" value="${esc(sc.start)}" ${ro?"disabled":""}></label>
         <label class="f"><span>Work ends</span><input type="time" data-cfg="schedule.end" value="${esc(sc.end)}" ${ro?"disabled":""}></label>
-        <label class="f"><span>Grace period (minutes)</span><input type="number" min="0" max="120" data-cfg="schedule.grace" value="${Number(sc.grace)||0}" ${ro?"disabled":""}><small>Check-ins within this many minutes after start aren't counted as late.</small></label></div>
+        <label class="f"><span>Grace period (minutes)</span><input type="number" min="0" max="120" data-cfg="schedule.grace" value="${Number(sc.grace)||0}" ${ro?"disabled":""}><small>Check-ins within this many minutes after start aren't counted as late.</small></label>
+        <label class="f"><span>Standard break (minutes)</span><input type="number" min="0" max="240" data-cfg="schedule.breakMin" value="${Number(sc.breakMin ?? 60)}" ${ro?"disabled":""}><small>Breaks shorter than this are reported as untaken break. 0 turns it off.</small></label></div>
       <fieldset style="border:0;padding:0;margin:0"><legend style="font-size:.8rem;font-weight:600;color:var(--ink2);margin-bottom:8px">Working days</legend><div class="row">${[1,2,3,4,5,6,0].map(w => `<label class="chk"><input type="checkbox" data-wd="${w}" ${(sc.workdays||[]).includes(w)?"checked":""} ${ro?"disabled":""}><span>${DOWL[w]}</span></label>`).join("")}</div></fieldset></div>`;
     body += kioskSettings(ro);
   } else if(tab === "notif"){
@@ -3618,7 +3673,7 @@ function integrity(){
     if(!ids.has(r.empId)) items.push({sev:2, text:`${r.no}: requester no longer exists`, req:r.id});
     if(r.status === "pending"){ const a = emp(r.steps[r.current]?.approverId); if(!a || a.status === "Resigned") items.push({sev:3, text:`${r.no} is stuck: the current approver ${a ? a.name + " has left" : "no longer exists"}`, req:r.id, fix:"reassign"}); }
     r.steps.forEach((s, i) => { const v = verifyStep(r, i); if(v === "missing" || v === "mismatch") items.push({sev:3, text:`${r.no}: step ${i+1} (${nm(s.approverId)}) has no matching signed decision — it may have been edited outside the approval screen`, req:r.id}); });
-    if(r.status !== "cancelled"){ const e = emp(r.empId), c = countDays(r.start, r.end, unitOf(r), e?.office); if(e && c.days !== r.days) items.push({sev:1, text:`${r.no}: saved as ${r.days} day(s) but the dates give ${c.days}`, req:r.id}); }
+    if(r.status !== "cancelled"){ const e = emp(r.empId), c = countDays(r.start, r.end, unitOf(r), e); if(e && c.days !== r.days) items.push({sev:1, text:`${r.no}: saved as ${r.days} day(s) but the dates give ${c.days}`, req:r.id}); }
   }
   for(const e of activeE()){
     let p = e.supervisorId, hop = 0; while(p && hop++ < 60){ if(p === e.id){ items.push({sev:2, text:`${e.name}: supervisor chain loops back to themselves`, emp:e.id}); break; } p = emp(p)?.supervisorId; }
@@ -4047,6 +4102,9 @@ document.addEventListener("click", async ev => {
       S.ui.delRem = null; await run(() => store.del("reminders", id), "Reminder deleted."); return;
     case "flow-mv": if(!isAdmin()) return; { const f = clone(cfg().flows[b.dataset.k]), i = Number(b.dataset.i), j = i + Number(v); [f[i], f[j]] = [f[j], f[i]]; await setCfg("flows."+b.dataset.k, f); return; }
     case "flow-rm": if(!isAdmin()) return; { const f = clone(cfg().flows[b.dataset.k]); f.splice(Number(b.dataset.i), 1); await setCfg("flows."+b.dataset.k, f); return; }
+    case "holtab": S.ui.holTab = v; render(); return;
+    case "hol-preset": { const cur = cfg().holidays || [], add = (HOL_PRESET[v] || []).filter(([d]) => !cur.some(h => h.date === d && hCountry(h) === v)).map(([date, name, kind]) => Object.assign({date, name, offices:[], country:v}, kind ? {kind} : {}));
+      await setCfg("holidays", cur.concat(add)); audit("holidays_added", `${HCAL[v]} official list`, `${add.length} day(s)`); toast(`${add.length} ${HCAL[v]} holiday${add.length === 1 ? "" : "s"} added.`); return; }
     case "hol-del": await setCfg("holidays", (cfg().holidays||[]).filter((h, i) => String(i) !== b.dataset.i)); return;
     case "crit-del": { const c = clone(cfg().criteria); c.splice(Number(b.dataset.i), 1); await setCfg("criteria", c); return; }
     case "seed": await seed(); return;
@@ -4170,6 +4228,7 @@ document.addEventListener("change", async ev => {
   if(t.closest?.("#modal form") && t.id !== "mfa-code") S.modalDirty = true;
   if(t.classList?.contains("inv")){ t.classList.remove("inv"); t.removeAttribute("aria-invalid"); t.closest(".f")?.classList.remove("inv-l"); }
   if(t.id === "cal-dept"){ S.ui.calDept = t.value; render(); return; }
+  if(t.id === "cal-hol"){ S.ui.calHol = t.value; render(); return; }
   if(t.id === "ddept"){ S.ui.ddept = t.value; render(); return; }
   if(t.id === "dformer"){ S.ui.dformer = t.checked; render(); return; }
   if(t.id === "doff"){ S.ui.doff = t.value; render(); return; }
@@ -4276,7 +4335,8 @@ document.addEventListener("submit", async ev => {
     return run(async () => { await store.put("employees", e); audit("note_added", e.name, dv(k,"kind","Training")); if(e.id !== S.me) await notify(e.id, `New ${dv(k,"kind","Training").toLowerCase()} note on your profile`, `Added by ${nm(S.me)}`, "profile", e.id, "note",
       {intro:`${nm(S.me)} added a ${dv(k,"kind","Training").toLowerCase()} entry to your history.`, quote:text, cta:{label:"View my history", go:"profile", ref:e.id}}); }, "Entry saved."); }
   if(s === "hol"){ const date = dv("hol","date",""), name = (dv("hol","name","")||"").trim(); if(!date || !name){ toast("Enter a date and a name."); return; }
-    const offices = dv("hol","offices",[]) || []; delete S.drafts.hol; return setCfg("holidays", (cfg().holidays||[]).filter(h => !(h.date === date && JSON.stringify(h.offices||[]) === JSON.stringify(offices))).concat([{date, name, offices}])); }
+    const offices = dv("hol","offices",[]) || [], country = S.ui.holTab || "ID", kind = dv("hol","kind","") === "cuti" && country === "ID" ? "cuti" : ""; delete S.drafts.hol;
+    return setCfg("holidays", (cfg().holidays||[]).filter(h => !(h.date === date && hCountry(h) === country && JSON.stringify(h.offices||[]) === JSON.stringify(offices))).concat([Object.assign({date, name, offices, country}, kind ? {kind} : {})])); }
   if(s === "crit"){ const n = (dv("crit","name","")||"").trim(); if(!n) return; delete S.drafts.crit; return setCfg("criteria", (cfg().criteria||[]).concat([n])); }
 });
 document.addEventListener("dragover", ev => { const d = ev.target.closest?.("#att-drop,#emp-drop,#restore-drop,#pay-drop"); if(d){ ev.preventDefault(); d.classList.add("over"); } });
