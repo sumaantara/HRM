@@ -143,7 +143,7 @@
 
   /* ------------------------------------------------------------------ sign-in screen */
   let authView = LINK.type === "invite" ? "welcome" : LINK.type === "recovery" ? "newpass" : "signin";
-  let authMsg = "";
+  let authMsg = "", authVals = {}, authBad = null;   // typed values survive a failed attempt; authBad = field to highlight
   const setsPassword = () => authView === "newpass" || authView === "welcome";
   function showAuth(msg) {
     if (msg !== undefined) authMsg = msg;
@@ -153,8 +153,8 @@
     const name = CFG.appName || "HRM";
     const f = (inner, submit) => `<form class="auth-form" data-auth="${authView}" novalidate>${inner}
       <button class="btn pri" type="submit">${submit}</button></form>`;
-    const email = `<label class="f"><span>Work email</span><input type="email" name="email" autocomplete="email" required placeholder="name@company.com"></label>`;
-    const pass = (lbl, ac) => `<label class="f"><span>${lbl}</span><input type="password" name="password" autocomplete="${ac}" required minlength="8"></label>`;
+    const email = `<label class="f"><span>Work email</span><input type="email" name="email" autocomplete="email" required placeholder="name@company.com" value="${esc(authVals.email || "")}"></label>`;
+    const pass = (lbl, ac) => `<label class="f"><span>${lbl}</span><input type="password" name="password" autocomplete="${ac}" required minlength="8" value="${esc(authVals.password || "")}"></label>`;
     let body = "";
     if (authView === "signin") body = f(email + pass("Password", "current-password"), "Sign in") +
       `<div class="auth-links auth-links-end"><button type="button" class="btn link" data-av="forgot">Forgot password?</button></div>
@@ -162,7 +162,7 @@
     if (authView === "forgot") body = f(email, "Send reset link") +
       `<p class="auth-alt"><button type="button" class="btn link" data-av="signin">Back to sign in</button></p>`;
     if (authView === "newpass" || authView === "welcome") body = f(pass("New password (min. 8 characters)", "new-password") +
-      `<label class="f"><span>Repeat the password</span><input type="password" name="password2" autocomplete="new-password" required minlength="8"></label>`, authView === "welcome" ? "Set password & sign in" : "Save new password") +
+      `<label class="f"><span>Repeat the password</span><input type="password" name="password2" autocomplete="new-password" required minlength="8" value="${esc(authVals.password2 || "")}"></label>`, authView === "welcome" ? "Set password & sign in" : "Save new password") +
       (authView === "welcome" ? `<p class="auth-hint">You'll use your work email and this password to sign in from now on.</p>` : "");
     const code = `<label class="f"><span>6-digit code</span><input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]*" maxlength="7" required placeholder="123 456" style="font-size:1.4rem;letter-spacing:.3em;text-align:center"></label>`;
     const out = `<p class="auth-alt"><button type="button" class="btn link" data-av="signout">Sign out</button></p>`;
@@ -178,10 +178,10 @@
         : `<div class="auth-brand"><span class="logo" aria-hidden="true">${esc(name.replace(/[^A-Za-z]/g, "").slice(0, 2).toUpperCase())}</span><div><b>${esc(name)}</b><small>${esc(CFG.tagline || "Human Resource Management")}</small></div></div>`}
       <h1 id="auth-t">${titles[authView]}</h1>
       ${authMsg ? `<div class="note ${/sent|check|saved|created/i.test(authMsg) ? "" : "warn"}" role="status"><div>${esc(authMsg)}</div></div>` : ""}
-      ${body}
-      <p class="auth-foot">Access is personal. Your actions are recorded under your account.</p></div>`;
-    const first = el.querySelector("input");
-    if (first) first.focus();
+      ${body}</div>`;
+    const bad = authBad && el.querySelector(`[name="${authBad}"]`);
+    if (bad) { bad.classList.add("inv"); bad.setAttribute("aria-invalid", "true"); bad.closest(".f")?.classList.add("inv-l"); bad.focus(); if (bad.type === "password" || bad.type === "email") bad.select(); }
+    else { const first = [...el.querySelectorAll("input")].find((i) => !i.value) || el.querySelector("input"); if (first) first.focus(); }
     if (authView === "mfa-setup" && !mfaEnroll) mfaStartEnroll().then((x) => { mfaEnroll = x; if (authView === "mfa-setup") showAuth(); }).catch((e) => { authMsg = friendly(e); mfaEnroll = { id: "", qr: "", secret: "" }; showAuth(); });
   }
   function hideAuth() { const el = $("auth"); if (el) { el.hidden = true; el.innerHTML = ""; } document.body.classList.remove("auth-on"); }
@@ -201,8 +201,9 @@
     const b = ev.target.closest && ev.target.closest("[data-av]");
     if (!b || !$("auth") || $("auth").hidden) return;
     if (b.dataset.av === "signout") { sb.auth.signOut({ scope: "local" }).finally(() => location.reload()); return; }
-    authView = b.dataset.av; authMsg = ""; showAuth();
+    authView = b.dataset.av; authMsg = ""; authBad = null; authVals = { email: authVals.email }; showAuth();
   });
+  document.addEventListener("input", (ev) => { const t = ev.target; if (t.closest && t.closest("#auth") && t.classList.contains("inv")) { t.classList.remove("inv"); t.removeAttribute("aria-invalid"); t.closest(".f")?.classList.remove("inv-l"); authBad = null; } });
   document.addEventListener("submit", async (ev) => {
     const form = ev.target.closest && ev.target.closest("form[data-auth]");
     if (!form) return;
@@ -210,6 +211,7 @@
     const v = Object.fromEntries(new FormData(form).entries());
     const email = String(v.email || "").trim().toLowerCase();
     const btn = form.querySelector("button[type=submit]"); btn.disabled = true;
+    authVals = { email: v.email || authVals.email || "", password: v.password || "", password2: v.password2 || "" }; authBad = null;
     try {
       const kind = form.dataset.auth;
       if (kind === "mfa" || kind === "mfa-setup") {
@@ -217,18 +219,27 @@
         mfaEnroll = null; authView = "signin"; await enter();
         return;
       }
-      if (kind !== "newpass" && kind !== "welcome" && !/^\S+@\S+\.\S+$/.test(email)) throw { message: "Enter a valid email address." };
+      if (kind !== "newpass" && kind !== "welcome" && !/^\S+@\S+\.\S+$/.test(email)) throw { message: "Enter a valid work email address.", field: "email" };
       if (kind === "signin") {
+        if (!v.password) throw { message: "Enter your password.", field: "password" };
         const { error } = await sb.auth.signInWithPassword({ email, password: v.password });
+        if (error && /invalid login/i.test(error.message || "")) {
+          let st = "ok"; try { const r = await sb.rpc("hrm_email_status", { p_email: email }); if (!r.error && r.data) st = r.data; } catch (x) { /* fall back to "wrong password" */ }
+          throw st === "none" ? { message: "We couldn't find an account with this email. Check the spelling, or ask HR for an invitation.", field: "email" }
+            : st === "not_invited" ? { message: "You haven't been invited yet. Ask HR to send your invitation email.", field: "email" }
+            : st === "no_password" ? { message: "This account has no password yet. Open your invitation email, or use “Forgot password?”.", field: "email" }
+            : { message: "Incorrect password. Try again, or use “Forgot password?”.", field: "password" };
+        }
         if (error) throw error;
+        authVals = { email };   // don't keep the password around after signing in
       } else if (kind === "forgot") {
         const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: redirectTo() });
         if (error) throw error;
         authView = "signin"; showAuth("If that email has an account, a reset link was sent.");
         return;
       } else if (kind === "newpass" || kind === "welcome") {
-        if (String(v.password || "").length < 8) throw { message: "Use at least 8 characters for the password." };
-        if (v.password !== v.password2) throw { message: "The two passwords don't match." };
+        if (String(v.password || "").length < 8) throw { message: "Use at least 8 characters for the password.", field: "password" };
+        if (v.password !== v.password2) throw { message: "The two passwords don't match.", field: "password2" };
         const { data: cur } = await sb.auth.getSession();
         if (!cur.session) throw { message: "This link has expired or was already used. Ask HR to resend the invitation, or use “Forgot password?”." };
         const { error } = await sb.auth.updateUser({ password: v.password });
@@ -238,7 +249,7 @@
         return;
       }
     } catch (e) {
-      authMsg = friendly(e); showAuth();
+      authMsg = friendly(e); authBad = e && e.field || (/password/i.test(authMsg) ? "password" : null); showAuth();
     } finally { if (btn.isConnected) btn.disabled = false; }
   }, true);
 
