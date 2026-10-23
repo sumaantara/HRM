@@ -61,7 +61,7 @@ function render(m: Mail, site: string, actionLink = "") {
   </table></td></tr>` : ""}
   ${quote ? `<tr><td style="padding:10px 28px 4px"><div style="border-left:3px solid #c9d3fd;background:#f5f6fa;border-radius:0 8px 8px 0;padding:12px 16px;font-size:14px;line-height:1.6;color:#3a4157">${esc(quote).replace(/\n/g, "<br>")}</div></td></tr>` : ""}
   <tr><td style="padding:20px 28px 28px"><a href="${esc(link)}" style="display:inline-block;background:#3554f5;color:#ffffff;text-decoration:none;font-weight:600;font-size:15px;padding:12px 22px;border-radius:10px">${esc(label)}</a>
-    <p style="margin:14px 0 0;font-size:12px;color:#6e7489">${actionLink ? "This link works once. If it has expired, ask HR to resend the invitation." : `Or open <a href="${esc(link)}" style="color:#3554f5">${esc(site)}</a>`}</p></td></tr>
+    <p style="margin:14px 0 0;font-size:12px;color:#6e7489">${actionLink ? "Use the newest invitation email — sending a new one cancels the link in older emails. If the link has expired, ask HR to resend it." : `Or open <a href="${esc(link)}" style="color:#3554f5">${esc(site)}</a>`}</p></td></tr>
   <tr><td style="padding:16px 28px;border-top:1px solid #e6e8f0;font-size:12px;line-height:1.5;color:#6e7489">ONEderland HRM · automatic notification. HRD can change which emails are sent in Settings → Notifications. Please don't reply to this email.</td></tr>
 </table></td></tr></table></body></html>`;
 
@@ -136,6 +136,15 @@ Deno.serve(async (req) => {
     const email = String(e.email || "").trim().toLowerCase();
     if (e.status === "Resigned") return json(400, { error: "resigned" });
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || /@example\.com$/.test(email)) return json(400, { error: "no_email" });
+    // a second invitation within 2 minutes would cancel the link in the first email (each new link replaces the old one)
+    if (e.invitedAt && Date.now() - Date.parse(String(e.invitedAt)) < 120000) return json(200, { status: "recent" });
+    // claim the send atomically (two clicks / two HR at once): only the update that still sees the old invitedAt wins
+    const prevInv = e.invitedAt ? String(e.invitedAt) : null, nowInv = new Date().toISOString();
+    let claim = admin.from("docs").update({ data: Object.assign({}, e, { invitedAt: nowInv }) }).eq("path", "employees/" + empId);
+    claim = prevInv ? claim.eq("data->>invitedAt", prevInv) : claim.is("data->>invitedAt", null);
+    const { data: won } = await claim.select("path");
+    if (!won || !won.length) return json(200, { status: "recent" });
+    const unclaim = () => admin.from("docs").update({ data: Object.assign({}, e, { invitedAt: prevInv || undefined }) }).eq("path", "employees/" + empId).eq("data->>invitedAt", nowInv);
     const name = String(e.name || "");
     let status = "sent";
     let gen = await admin.auth.admin.generateLink({ type: "invite", email, options: { redirectTo: site, data: { full_name: name } } });
@@ -143,8 +152,11 @@ Deno.serve(async (req) => {
       status = "reset";
       gen = await admin.auth.admin.generateLink({ type: "recovery", email, options: { redirectTo: site } });
     }
-    const actionLink = gen.data?.properties?.action_link;
-    if (gen.error || !actionLink) { console.error("generateLink", gen.error); return json(502, { error: "link_failed" }); }
+    // link to the HRM itself with the hashed token; the token is only used when the person submits their new password,
+    // so mail scanners / link previews that open the link can't use it up ("Email link is invalid or has expired")
+    const hashed = gen.data?.properties?.hashed_token, vtype = gen.data?.properties?.verification_type || (status === "sent" ? "invite" : "recovery");
+    if (gen.error || !hashed) { console.error("generateLink", gen.error); await unclaim(); return json(502, { error: "link_failed" }); }
+    const actionLink = `${site}#vt=${encodeURIComponent(vtype)}&th=${encodeURIComponent(hashed)}&em=${encodeURIComponent(email)}&v=welcome`;
     const first = name.split(" ")[0];
     const mail: Mail = status === "sent"
       ? { heading: "You're invited to ONEderland HRM", name: first, intro: "HR has created your account on ONEderland HRM — the place for leave and WFH requests, approvals, your leave balance, contracts, performance reviews and company announcements.\n\nSet your password once and you're in. After that, sign in with your work email and that password.",
@@ -154,8 +166,7 @@ Deno.serve(async (req) => {
     const { html, text } = render(mail, site, actionLink);
     try {
       await transport.sendMail({ from: env("SMTP_FROM") || user, to: email, subject: status === "sent" ? "[HRM] You're invited to ONEderland HRM" : "[HRM] Set your password", text, html });
-    } catch (err) { console.error("smtp", err); return json(502, { error: "smtp_failed" }); }
-    await admin.from("docs").update({ data: Object.assign({}, e, { invitedAt: new Date().toISOString() }) }).eq("path", "employees/" + empId);
+    } catch (err) { console.error("smtp", err); await unclaim(); return json(502, { error: "smtp_failed" }); }
     return json(200, { status });
   }
 

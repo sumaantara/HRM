@@ -15,7 +15,10 @@
     return;
   }
   // links from invitation / password-reset emails land here with #...&type=invite|recovery
-  const LINK = (() => { try { const h = new URLSearchParams(location.hash.slice(1)); return { type: h.get("type") || "", error: h.get("error_description") || "" }; } catch (e) { return { type: "", error: "" }; } })();
+  // links from invitation / password-reset emails: new style "#vt=invite|recovery&th=<hashed token>&em=<email>" (verified only
+  // when the person submits a password, so mail scanners can't use the link up), old style "#...&type=invite|recovery"
+  const LINK = (() => { try { const h = new URLSearchParams(location.hash.slice(1)); return { type: h.get("vt") || h.get("type") || "", th: h.get("th") || "", em: h.get("em") || "", view: h.get("v") || "", error: h.get("error_description") || "" }; } catch (e) { return { type: "", th: "", em: "", view: "", error: "" }; } })();
+  if (LINK.th) { try { history.replaceState(null, "", location.pathname + location.search); } catch (e) { /* ignore */ } }
   const sb = window.supabase.createClient(CFG.supabaseUrl, CFG.supabaseKey, {
     auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
   });
@@ -123,7 +126,7 @@
   }
 
   sb.auth.onAuthStateChange((event, session) => {
-    if (event === "PASSWORD_RECOVERY") { authView = "newpass"; showAuth(); return; }
+    if (event === "PASSWORD_RECOVERY") { if (!setsPassword()) { authView = "newpass"; showAuth(); } return; }
     if (event === "SIGNED_OUT") { location.reload(); return; }
     if (session && !who && !setsPassword() && event !== "INITIAL_SESSION") enter().catch(fatalFromError);
   });
@@ -142,7 +145,7 @@
   }
 
   /* ------------------------------------------------------------------ sign-in screen */
-  let authView = LINK.type === "invite" ? "welcome" : LINK.type === "recovery" ? "newpass" : "signin";
+  let authView = LINK.view === "welcome" || LINK.type === "invite" ? "welcome" : LINK.type === "recovery" ? "newpass" : "signin";
   let authMsg = "", authVals = {}, authBad = null;   // typed values survive a failed attempt; authBad = field to highlight
   const setsPassword = () => authView === "newpass" || authView === "welcome";
   function showAuth(msg) {
@@ -163,7 +166,7 @@
       `<p class="auth-alt"><button type="button" class="btn link" data-av="signin">Back to sign in</button></p>`;
     if (authView === "newpass" || authView === "welcome") body = f(pass("New password (min. 8 characters)", "new-password") +
       `<label class="f"><span>Repeat the password</span><input type="password" name="password2" autocomplete="new-password" required minlength="8" value="${esc(authVals.password2 || "")}"></label>`, authView === "welcome" ? "Set password & sign in" : "Save new password") +
-      (authView === "welcome" ? `<p class="auth-hint">You'll use your work email and this password to sign in from now on.</p>` : "");
+      (authView === "welcome" ? `<p class="auth-hint">${LINK.em ? `Your sign-in email: <b>${esc(LINK.em)}</b>. ` : ""}You'll use your work email and this password to sign in from now on.</p>` : "");
     const code = `<label class="f"><span>6-digit code</span><input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]*" maxlength="7" required placeholder="123 456" style="font-size:1.4rem;letter-spacing:.3em;text-align:center"></label>`;
     const out = `<p class="auth-alt"><button type="button" class="btn link" data-av="signout">Sign out</button></p>`;
     if (authView === "mfa") body = `<p class="auth-hint">Open your authenticator app (Google Authenticator, Microsoft Authenticator, Authy…) and enter the code shown for <b>ONEderland HRM</b>.</p>` +
@@ -188,6 +191,7 @@
   function redirectTo() { return CFG.siteUrl || (location.origin + location.pathname); }
   const friendly = (e) => {
     const m = (e && (e.message || e.error_description)) || "Something went wrong.";
+    if (e && e.own) return m;   // our own wording
     if (/invalid login/i.test(m)) return "Email or password is incorrect.";
     if (/email not confirmed/i.test(m)) return "Confirm your email first — open the link we sent you, then sign in.";
     if (/rate limit|too many/i.test(m)) return "Too many attempts. Wait a few minutes and try again.";
@@ -240,6 +244,11 @@
       } else if (kind === "newpass" || kind === "welcome") {
         if (String(v.password || "").length < 8) throw { message: "Use at least 8 characters for the password.", field: "password" };
         if (v.password !== v.password2) throw { message: "The two passwords don't match.", field: "password2" };
+        if (LINK.th) {   // new-style link: verify the token now (this also signs the person in)
+          const { error: verr } = await sb.auth.verifyOtp({ token_hash: LINK.th, type: LINK.type === "recovery" ? "recovery" : "invite" });
+          if (verr) throw { message: /expired|invalid|not found/i.test(verr.message || "") ? "This link has expired or a newer invitation was sent. Open the newest email, or ask HR to resend it." : verr.message, own: true };
+          LINK.th = "";
+        }
         const { data: cur } = await sb.auth.getSession();
         if (!cur.session) throw { message: "This link has expired or was already used. Ask HR to resend the invitation, or use “Forgot password?”." };
         const { error } = await sb.auth.updateUser({ password: v.password });

@@ -314,7 +314,7 @@ const dv = (k, n, d) => (S.drafts[k] && n in S.drafts[k]) ? S.drafts[k][n] : d;
    rd/<uid>, ph/<uid>   per-person read receipts and self-uploaded profile photo
    audit/<uid>/m/<yyyy-mm>  each person's own monthly audit trail
    requests, notifs, counters   shared working data (Contributors write) */
-const APP_VERSION = "4.4.1", SCHEMA = 2;
+const APP_VERSION = "4.4.2", SCHEMA = 2;
 const PRIVATE_FIELDS = ["phone","gender","birthDate","address","exitReason","contract","contracts","notes","quotaLog"];
 const SUB_COLS = ["employees","private","requests","candidates","tasks","reviews","reminders","notifs","announcements","attendance","attImports","backups","dec","links","rd","ph","sub","payslips","payruns","appraisals","kiosks","facestat"];
 const CORE_COLS = ["employees","requests","tasks","notifs","announcements","attendance"];
@@ -3755,11 +3755,16 @@ const inviteState = e => e?.userId ? ["Account active", "p-active"] : e?.invited
 async function inviteEmp(id, quiet){
   const e = emp(id); if(!window.HRM || !e) return {status:"skip"};
   if(!canInvite(e)){ if(!quiet) toast(e.userId ? `${e.name} already uses the HRM.` : !e.email || /@example\.com$/i.test(e.email) ? `Add ${e.name}'s real work email first.` : "This person can't be invited."); return {status:"skip"}; }
+  // one invitation at a time per person: a second link cancels the first ("Email link is invalid or has expired")
+  const busy = (S._inv ||= {}), last = busy[id];
+  if(last === "busy" || (last && Date.now() - last < 120000)){ if(!quiet) toast(`An invitation to ${e.email} was just sent — ask ${e.name} to open the newest email.`); return {status:"recent"}; }
+  busy[id] = "busy";
   try { const r = await window.HRM.invite(id);
-    if(!quiet) toast(r.status === "sent" ? `Invitation sent to ${e.email}.` : r.status === "reset" ? `${e.name} already had an account — a link to set the password was sent to ${e.email}.` : r.status === "linked" ? `${e.name} already uses the HRM.` : `Invitation not sent: ${r.reason || r.status}.`);
+    busy[id] = (r.status === "sent" || r.status === "reset" || r.status === "recent") ? Date.now() : 0;
+    if(!quiet) toast(r.status === "recent" ? `An invitation to ${e.email} was sent less than 2 minutes ago — ask ${e.name} to open the newest email.` : r.status === "sent" ? `Invitation sent to ${e.email}.` : r.status === "reset" ? `${e.name} already had an account — a link to set the password was sent to ${e.email}.` : r.status === "linked" ? `${e.name} already uses the HRM.` : `Invitation not sent: ${r.reason || r.status}.`);
     if(r.status === "sent" || r.status === "reset") audit("invitation_sent", `${e.empNo} ${e.name}`, e.email);
     return r; }
-  catch(err){ if(!quiet) toast(`Invitation not sent: ${err?.message || "the server didn't respond"}.`); return {status:"error", reason:err?.message}; }
+  catch(err){ busy[id] = 0; if(!quiet) toast(`Invitation not sent: ${err?.message || "the server didn't respond"}.`); return {status:"error", reason:err?.message}; }
 }
 async function inviteMany(ids){
   const list = ids.filter(id => canInvite(emp(id))); if(!list.length) return;
