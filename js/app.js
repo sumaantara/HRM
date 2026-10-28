@@ -348,7 +348,7 @@ const dv = (k, n, d) => (S.drafts[k] && n in S.drafts[k]) ? S.drafts[k][n] : d;
    rd/<uid>, ph/<uid>   per-person read receipts and self-uploaded profile photo
    audit/<uid>/m/<yyyy-mm>  each person's own monthly audit trail
    requests, notifs, counters   shared working data (Contributors write) */
-const APP_VERSION = "4.7.0", SCHEMA = 2;
+const APP_VERSION = "4.7.1", SCHEMA = 2;
 const PRIVATE_FIELDS = ["phone","gender","birthDate","address","exitReason","contract","contracts","notes","quotaLog"];
 const SUB_COLS = ["employees","private","requests","candidates","tasks","reviews","reminders","notifs","announcements","attendance","attImports","backups","dec","links","rd","ph","sub","payslips","payruns","appraisals","kiosks","facestat"];
 const CORE_COLS = ["employees","requests","tasks","notifs","announcements","attendance"];
@@ -1311,7 +1311,10 @@ function vCalendar(){
   let cells = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].map(d => `<div class="dw">${d}</div>`).join(""); const d = new Date(start);
   for(let i = 0; i < 42; i++){ const s = iso(d), w = d.getDay(), inM = d.getMonth() === m-1;
     const on = reqs.filter(r => r.start <= s && r.end >= s && (unitOf(r) === "calendar" || (w !== 0 && w !== 6 && !holMap(emp(r.empId))[s])));
-    cells += `<div class="d ${inM?"":"out"} ${w===0||w===6?"we":""} ${s===t?"today":""}"><span class="dn">${d.getDate()}</span>${(holL[s] || []).filter(h => !S.ui.calHol || S.ui.calHol === hCountry(h)).map(h => `<span class="hol ${hCountry(h) === "AU" ? "au" : ""} ${h.kind === "cuti" ? "cb" : ""} ${cbMode(h) === "work" ? "wk" : ""}" title="${esc(HCAL[hCountry(h)])} · ${h.kind === "cuti" ? "Cuti bersama — " + CB_MODES[cbMode(h)] : "Public holiday"}"><b>${hCountry(h)}</b> ${esc(h.name)}</span>`).join("")}
+    const shown = (holL[s] || []).filter(h => !S.ui.calHol || S.ui.calHol === hCountry(h));
+    // whole day tinted by the strongest kind shown: public holiday › cuti bersama that deducts annual leave › cuti bersama as company holiday
+    const tint = shown.some(h => h.kind !== "cuti") ? "h-ph" : shown.some(h => cbMode(h) === "deduct") ? "h-cbd" : shown.some(h => cbMode(h) === "holiday") ? "h-cbh" : "";
+    cells += `<div class="d ${inM?"":"out"} ${w===0||w===6?"we":""} ${s===t?"today":""} ${tint}"><span class="dn">${d.getDate()}</span>${shown.map(h => `<span class="hol ${hCountry(h) === "AU" ? "au" : ""} ${h.kind === "cuti" ? "cb" : ""} ${cbMode(h) === "work" ? "wk" : ""}" title="${esc(HCAL[hCountry(h)])} · ${h.kind === "cuti" ? "Cuti bersama — " + CB_MODES[cbMode(h)] : "Public holiday"}"><b>${hCountry(h)}</b> ${esc(h.name)}</span>`).join("")}
       ${on.map(r => `<button type="button" class="chip ${r.status==="pending"?"pd":r.kind==="wfh"?"wf":"lv"}" data-act="open-req" data-id="${r.id}" title="${esc(nm(r.empId))} · ${esc(typeName(r))} · ${r.status}" style="border:0;text-align:left">${esc(first(r.empId))}</button>`).join("")}</div>`;
     d.setDate(d.getDate()+1); if(i >= 34 && d.getMonth() !== m-1 && (i+1) % 7 === 0) break; }
   const monthList = reqs.filter(r => overlap(r.start, r.end, `${S.ui.cal}-01`, `${S.ui.cal}-31`)).sort((a,b) => a.start.localeCompare(b.start));
@@ -1320,7 +1323,9 @@ function vCalendar(){
     <select id="cal-hol" aria-label="Public holidays" style="width:auto"><option value="">ID + AU holidays</option><option value="ID" ${S.ui.calHol==="ID"?"selected":""}>Indonesian holidays</option><option value="AU" ${S.ui.calHol==="AU"?"selected":""}>Australian holidays</option></select>
     <div class="seg"><button type="button" data-act="calk" data-v="all" aria-pressed="${kind==="all"}">All</button><button type="button" data-act="calk" data-v="leave" aria-pressed="${kind==="leave"}">Leave</button><button type="button" data-act="calk" data-v="wfh" aria-pressed="${kind==="wfh"}">WFH</button></div></div></div>
   <section class="card" style="overflow:hidden"><div class="card-h"><h2>${MONL[m-1]} ${y}</h2><div class="row" style="gap:6px"><button class="ib" type="button" data-act="calm" data-v="-1" aria-label="Previous month">${ic("left")}</button><button class="btn sm" type="button" data-act="calm" data-v="0">Today</button><button class="ib" type="button" data-act="calm" data-v="1" aria-label="Next month">${ic("right")}</button></div></div>
-    <div class="cal">${cells}</div></section>
+    <div class="cal">${cells}</div>
+    <div class="cal-legend" aria-label="Legend"><span><i class="lg h-ph"></i>Public holiday</span><span><i class="lg h-cbd"></i>Cuti bersama · deducts annual leave</span><span><i class="lg h-cbh"></i>Cuti bersama · company holiday</span>
+      <span><i class="lg lv"></i>Leave</span><span><i class="lg wf"></i>WFH</span><span><i class="lg pd"></i>Waiting for approval</span><span class="muted">ID = Indonesia · AU = Australia</span></div></section>
   <section class="card"><div class="card-h"><h2>This month</h2><span class="tag">${monthList.length}</span></div>${reqTable(monthList, {empty:"No leave or WFH in this month."})}</section>`;
 }
 
