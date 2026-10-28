@@ -157,7 +157,9 @@
     const f = (inner, submit) => `<form class="auth-form" data-auth="${authView}" novalidate>${inner}
       <button class="btn pri" type="submit">${submit}</button></form>`;
     const email = `<label class="f"><span>Work email</span><input type="email" name="email" autocomplete="email" required placeholder="name@company.com" value="${esc(authVals.email || "")}"></label>`;
-    const pass = (lbl, ac) => `<label class="f"><span>${lbl}</span><input type="password" name="password" autocomplete="${ac}" required minlength="8" value="${esc(authVals.password || "")}"></label>`;
+    // password field with a show / hide button (the eye)
+    const pw = (n, ac, val) => `<span class="pw-wrap"><input type="password" name="${n}" autocomplete="${ac}" required minlength="8" value="${esc(val || "")}" spellcheck="false" autocapitalize="off"><button type="button" class="pw-eye" data-pw aria-label="Show password" aria-pressed="false" title="Show password">${EYE}</button></span>`;
+    const pass = (lbl, ac) => `<label class="f"><span>${lbl}</span>${pw("password", ac, authVals.password)}</label>`;
     let body = "";
     if (authView === "signin") body = f(email + pass("Password", "current-password"), "Sign in") +
       `<div class="auth-links auth-links-end"><button type="button" class="btn link" data-av="forgot">Forgot password?</button></div>
@@ -165,7 +167,7 @@
     if (authView === "forgot") body = f(email, "Send reset link") +
       `<p class="auth-alt"><button type="button" class="btn link" data-av="signin">Back to sign in</button></p>`;
     if (authView === "newpass" || authView === "welcome") body = f(pass("New password (min. 8 characters)", "new-password") +
-      `<label class="f"><span>Repeat the password</span><input type="password" name="password2" autocomplete="new-password" required minlength="8" value="${esc(authVals.password2 || "")}"></label>`, authView === "welcome" ? "Set password & sign in" : "Save new password") +
+      `<label class="f"><span>Repeat the password</span>${pw("password2", "new-password", authVals.password2)}</label>`, authView === "welcome" ? "Set password & sign in" : "Save new password") +
       (authView === "welcome" ? `<p class="auth-hint">${LINK.em ? `Your sign-in email: <b>${esc(LINK.em)}</b>. ` : ""}You'll use your work email and this password to sign in from now on.</p>` : "");
     const code = `<label class="f"><span>6-digit code</span><input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]*" maxlength="7" required placeholder="123 456" style="font-size:1.4rem;letter-spacing:.3em;text-align:center"></label>`;
     const out = `<p class="auth-alt"><button type="button" class="btn link" data-av="signout">Sign out</button></p>`;
@@ -201,7 +203,17 @@
     return m;
   };
 
+  const EYE = `<svg class="eye-on" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg><svg class="eye-off" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3l18 18"/><path d="M10.6 5.1A10.7 10.7 0 0 1 12 5c6.4 0 10 7 10 7a17.7 17.7 0 0 1-3.2 4.1M6.6 6.6C3.9 8.4 2 12 2 12s3.6 7 10 7c1.7 0 3.2-.5 4.5-1.2"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>`;
   document.addEventListener("click", (ev) => {
+    const eye = ev.target.closest && ev.target.closest("[data-pw]");
+    if (eye) {   // show / hide every password field in this form together, keep the cursor where it was
+      ev.preventDefault();
+      const on = eye.getAttribute("aria-pressed") !== "true", form = eye.closest("form") || document;
+      form.querySelectorAll(".pw-wrap").forEach((w) => { const i = w.querySelector("input"), b = w.querySelector("[data-pw]"); i.type = on ? "text" : "password";
+        b.setAttribute("aria-pressed", String(on)); b.setAttribute("aria-label", on ? "Hide password" : "Show password"); b.title = on ? "Hide password" : "Show password"; });
+      const inp = eye.parentElement.querySelector("input"); inp.focus({ preventScroll: true }); try { const n = inp.value.length; inp.setSelectionRange(n, n); } catch (e) { /* ignore */ }
+      return;
+    }
     const b = ev.target.closest && ev.target.closest("[data-av]");
     if (!b || !$("auth") || $("auth").hidden) return;
     if (b.dataset.av === "signout") { sb.auth.signOut({ scope: "local" }).finally(() => location.reload()); return; }
@@ -237,8 +249,13 @@
         if (error) throw error;
         authVals = { email };   // don't keep the password around after signing in
       } else if (kind === "forgot") {
-        const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: redirectTo() });
-        if (error) throw error;
+        // the HRM's own reset email (branded, scanner-proof link); Supabase's built-in email only if that function isn't available
+        const r = await sb.functions.invoke("auth-mail", { body: { action: "recover", email } }).catch((e) => ({ error: e }));
+        if (r.error || !r.data || !r.data.ok) {
+          if (r.data && r.data.error === "bad_email") throw { message: "Enter a valid work email address.", field: "email" };
+          const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: redirectTo() });
+          if (error) throw error;
+        }
         authView = "signin"; showAuth("If that email has an account, a reset link was sent.");
         return;
       } else if (kind === "newpass" || kind === "welcome") {

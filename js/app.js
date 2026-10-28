@@ -106,9 +106,21 @@ const months = s => s ? Math.floor(diffDays(s, today()) / 30.44) : 0;
 const HCAL = {ID:"Indonesia", AU:"Australia"};
 const holCal = e => (e && HCAL[e.holCal]) ? e.holCal : "ID";
 const hCountry = h => HCAL[h.country] ? h.country : "ID";
+// cuti bersama (collective leave) has a mode: deduct = office closed, 1 day taken from annual leave (default) · holiday = office closed, no deduction ·
+// work = normal working day (people who want the day off apply for leave)
+const CB_MODES = {deduct:"Deducts annual leave", holiday:"Company holiday (no deduction)", work:"Normal working day"};
+const cbMode = h => h.kind === "cuti" ? (CB_MODES[h.mode] ? h.mode : "deduct") : "";
+const offDay = h => cbMode(h) !== "work";
+const hApplies = (h, e) => hCountry(h) === holCal(e) && (!h.offices?.length || !e?.office || h.offices.includes(e.office));
+const CB_FROM_DEFAULT = "2026-10-28";   // deduction starts with this release, so earlier cuti bersama aren't taken twice (HR can move it in Settings → Holidays)
+// cuti bersama days taken from a person's annual leave between two dates (only workdays, after joining, from the "deduct from" date on)
+function cbDays(e, from, to){
+  if(!e) return []; const start = [from, cfg().cbFrom || CB_FROM_DEFAULT, e.joinDate || ""].sort().pop(), end = [to, e.exitDate || "9999-12-31"].sort()[0], wd = sched().workdays || [1,2,3,4,5];
+  return (cfg().holidays || []).filter(h => cbMode(h) === "deduct" && hApplies(h, e) && h.date >= start && h.date <= end && wd.includes(parse(h.date).getDay())).map(h => h.date).sort();
+}
 // holMap(employee) → that person's holidays · holMap("Office") → Indonesian holidays for that office · holMap() → every holiday (calendar view)
 const holMap = (who, cal) => { const isE = who && typeof who === "object", office = isE ? who.office : who, c = cal || (isE ? holCal(who) : who ? "ID" : null);
-  return Object.fromEntries((cfg().holidays||[]).filter(h => (!c || hCountry(h) === c) && (!h.offices?.length || !office || h.offices.includes(office))).map(h => [h.date, h.name])); };
+  return Object.fromEntries((cfg().holidays||[]).filter(h => offDay(h) && (!c || hCountry(h) === c) && (!h.offices?.length || !office || h.offices.includes(office))).map(h => [h.date, h.name])); };
 // official lists (SKB 3 Menteri for Indonesia incl. cuti bersama · Fair Work national days observed in every Australian state)
 const HOL_PRESET = {
   ID:[["2026-01-01","Tahun Baru Masehi"],["2026-01-16","Isra Mikraj"],["2026-02-16","Cuti bersama Imlek","cuti"],["2026-02-17","Tahun Baru Imlek"],["2026-03-18","Cuti bersama Nyepi","cuti"],["2026-03-19","Hari Suci Nyepi"],["2026-03-20","Cuti bersama Idulfitri","cuti"],["2026-03-21","Idulfitri"],["2026-03-22","Idulfitri"],["2026-03-23","Cuti bersama Idulfitri","cuti"],["2026-03-24","Cuti bersama Idulfitri","cuti"],["2026-04-03","Wafat Yesus Kristus"],["2026-04-05","Paskah"],["2026-05-01","Hari Buruh"],["2026-05-14","Kenaikan Yesus Kristus"],["2026-05-15","Cuti bersama Kenaikan Yesus Kristus","cuti"],["2026-05-27","Iduladha"],["2026-05-28","Cuti bersama Iduladha","cuti"],["2026-05-31","Waisak"],["2026-06-01","Hari Lahir Pancasila"],["2026-06-16","Tahun Baru Islam"],["2026-08-17","Hari Kemerdekaan"],["2026-08-25","Maulid Nabi"],["2026-12-24","Cuti bersama Natal","cuti"],["2026-12-25","Natal"],
@@ -164,7 +176,9 @@ function balance(eid, type){
   for(const r of S.D.requests){ if(r.empId !== eid || r.kind !== "leave" || r.type !== type) continue;
     if(r.status === "approved") used += r.days; else if(r.status === "pending") pend += r.days; }
   const granted = e?.quotaLog ? e.quotaLog.filter(x => x.type === type).reduce((s,x) => s + Number(x.delta||0), 0) : Number(e?.granted?.[type] || 0);
-  return {quota:granted, granted, used, pend, avail:granted - used - pend, unlimited:!t.track};
+  let cbUsed = 0, cbPend = 0;
+  if(type === "annual" && t.track && e){ const t0 = today(), cb = cbDays(e, "0000-01-01", `${t0.slice(0,4)}-12-31`); cbUsed = cb.filter(d => d <= t0).length; cbPend = cb.length - cbUsed; used += cbUsed; pend += cbPend; }
+  return {quota:granted, granted, used, pend, cbUsed, cbPend, avail:granted - used - pend, unlimited:!t.track};
 }
 const grantDefaults = (e, ctype) => Object.fromEntries(typesFor(e).filter(([k,t]) => t.track).map(([k,t]) => [k, Number(ctype === "Probation" ? t.probation : t.renewal) || 0]));
 const grantEntries = (amounts, reason, date) => Object.entries(amounts).filter(([k,v]) => Number(v) > 0).map(([type,v]) => ({id:uid("g"), date:date||today(), type, delta:Number(v), reason, by:S.me}));
@@ -334,7 +348,7 @@ const dv = (k, n, d) => (S.drafts[k] && n in S.drafts[k]) ? S.drafts[k][n] : d;
    rd/<uid>, ph/<uid>   per-person read receipts and self-uploaded profile photo
    audit/<uid>/m/<yyyy-mm>  each person's own monthly audit trail
    requests, notifs, counters   shared working data (Contributors write) */
-const APP_VERSION = "4.6.0", SCHEMA = 2;
+const APP_VERSION = "4.7.0", SCHEMA = 2;
 const PRIVATE_FIELDS = ["phone","gender","birthDate","address","exitReason","contract","contracts","notes","quotaLog"];
 const SUB_COLS = ["employees","private","requests","candidates","tasks","reviews","reminders","notifs","announcements","attendance","attImports","backups","dec","links","rd","ph","sub","payslips","payruns","appraisals","kiosks","facestat"];
 const CORE_COLS = ["employees","requests","tasks","notifs","announcements","attendance"];
@@ -886,7 +900,8 @@ function balanceCard(eid, title="My Leave Balance", link=true){
   return `<section class="card"><div class="card-h"><span class="tile c1" style="width:40px;height:40px">${ic("chart")}</span><h2>${title}</h2>${link?`<button class="btn link" type="button" data-act="go" data-v="apply">Request ${ic("right")}</button>`:""}</div>
     <div class="bal">${types.map(([k,t]) => { const b = balance(eid, k);
       const pct = v => b.unlimited || !b.quota ? 0 : Math.min(100, Math.max(0, v / b.quota * 100));
-      return `<div class="bal-row"><div class="top"><span>${esc(t.name)}</span><span class="num">${b.unlimited ? `${b.used} <small>days used</small>` : `${b.avail} <small>/ ${b.quota}</small>`}</span></div>
+      const cbN = (b.cbUsed || 0) + (b.cbPend || 0);
+      return `<div class="bal-row"><div class="top"><span>${esc(t.name)}${cbN ? ` <span class="small muted" title="Collective leave days set by the government, taken from annual leave">· incl. ${cbN} cuti bersama${b.cbPend ? ` (${b.cbPend} coming)` : ""}</span>` : ""}</span><span class="num">${b.unlimited ? `${b.used} <small>days used</small>` : `${b.avail} <small>/ ${b.quota}</small>`}</span></div>
         <div class="track" role="img" aria-label="${esc(t.name)}: ${b.used} used, ${b.pend} pending${b.unlimited?"":`, ${b.avail} available of ${b.quota}`}">${b.unlimited?"":`<i class="u" style="width:${pct(b.used)}%"></i><i class="p" style="width:${pct(b.pend)}%"></i>`}</div></div>`; }).join("")}
       <div class="row small muted" style="gap:16px"><span><i style="display:inline-block;width:9px;height:9px;border-radius:2px;background:var(--accent);margin-right:6px"></i>Used</span><span><i style="display:inline-block;width:9px;height:9px;border-radius:2px;background:var(--warn);margin-right:6px"></i>Pending</span><span>Available / total granted. Quota is managed by HRD.</span></div>
     </div></section>`;
@@ -1296,7 +1311,7 @@ function vCalendar(){
   let cells = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].map(d => `<div class="dw">${d}</div>`).join(""); const d = new Date(start);
   for(let i = 0; i < 42; i++){ const s = iso(d), w = d.getDay(), inM = d.getMonth() === m-1;
     const on = reqs.filter(r => r.start <= s && r.end >= s && (unitOf(r) === "calendar" || (w !== 0 && w !== 6 && !holMap(emp(r.empId))[s])));
-    cells += `<div class="d ${inM?"":"out"} ${w===0||w===6?"we":""} ${s===t?"today":""}"><span class="dn">${d.getDate()}</span>${(holL[s] || []).filter(h => !S.ui.calHol || S.ui.calHol === hCountry(h)).map(h => `<span class="hol ${hCountry(h) === "AU" ? "au" : ""} ${h.kind === "cuti" ? "cb" : ""}" title="${esc(HCAL[hCountry(h)])} · ${h.kind === "cuti" ? "Collective leave (cuti bersama)" : "Public holiday"}"><b>${hCountry(h)}</b> ${esc(h.name)}</span>`).join("")}
+    cells += `<div class="d ${inM?"":"out"} ${w===0||w===6?"we":""} ${s===t?"today":""}"><span class="dn">${d.getDate()}</span>${(holL[s] || []).filter(h => !S.ui.calHol || S.ui.calHol === hCountry(h)).map(h => `<span class="hol ${hCountry(h) === "AU" ? "au" : ""} ${h.kind === "cuti" ? "cb" : ""} ${cbMode(h) === "work" ? "wk" : ""}" title="${esc(HCAL[hCountry(h)])} · ${h.kind === "cuti" ? "Cuti bersama — " + CB_MODES[cbMode(h)] : "Public holiday"}"><b>${hCountry(h)}</b> ${esc(h.name)}</span>`).join("")}
       ${on.map(r => `<button type="button" class="chip ${r.status==="pending"?"pd":r.kind==="wfh"?"wf":"lv"}" data-act="open-req" data-id="${r.id}" title="${esc(nm(r.empId))} · ${esc(typeName(r))} · ${r.status}" style="border:0;text-align:left">${esc(first(r.empId))}</button>`).join("")}</div>`;
     d.setDate(d.getDate()+1); if(i >= 34 && d.getMonth() !== m-1 && (i+1) % 7 === 0) break; }
   const monthList = reqs.filter(r => overlap(r.start, r.end, `${S.ui.cal}-01`, `${S.ui.cal}-31`)).sort((a,b) => a.start.localeCompare(b.start));
@@ -1450,7 +1465,9 @@ function pHistory(e){
 }
 function pLeave(e){
   const list = S.D.requests.filter(r => r.empId === e.id).sort((a,b) => b.start.localeCompare(a.start));
-  const types = typesFor(e), log = [...(e.quotaLog||[])].sort((a,b) => b.date.localeCompare(a.date) || 0), hr = isHR();
+  const t0 = today(), cbName = d => (cfg().holidays || []).find(h => h.date === d && cbMode(h) === "deduct" && hApplies(h, e))?.name || "Cuti bersama";
+  const cbLog = LT().annual?.track ? cbDays(e, "0000-01-01", `${t0.slice(0,4)}-12-31`).map(d => ({date:d, type:"annual", delta:-1, reason:`${cbName(d)} — cuti bersama${d > t0 ? " (coming, reserved)" : ""}`, cb:true})) : [];
+  const types = typesFor(e), log = [...(e.quotaLog||[]), ...cbLog].sort((a,b) => b.date.localeCompare(a.date) || 0), hr = isHR();
   return `<section class="card"><div class="card-h"><span class="tile c1" style="width:38px;height:38px">${ic("chart")}</span><h2>Leave quota</h2>
       ${hr ? `<button class="btn sm pri" type="button" data-act="quota-adj" data-id="${e.id}">${ic("edit")}Adjust quota</button>` : `<span class="tag">Managed by HRD · view only</span>`}</div>
     <div class="tw"><table class="t rt"><thead><tr><th>Leave type</th><th class="r">Granted</th><th class="r">Used</th><th class="r">Pending</th><th class="r">Available</th>${hr?"<th></th>":""}</tr></thead><tbody>
@@ -1462,7 +1479,7 @@ function pLeave(e){
   <div class="grid split"><section class="card"><div class="card-h"><h2>Quota history</h2><span class="tag">${log.length}</span></div>
     ${log.length ? `<div class="tw"><table class="t rt"><thead><tr><th>Date</th><th>Leave type</th><th class="r">Change</th><th>Reason</th><th>By</th></tr></thead><tbody>${log.map(x => `<tr>
       <td data-l="Date">${fmt(x.date)}</td><td data-l="Type">${esc(LT()[x.type]?.name||x.type)}</td><td data-l="Change" class="r num"><b class="${x.delta<0?"down":"up"}">${x.delta>0?"+":""}${x.delta}</b></td>
-      <td data-l="Reason" class="wide" style="white-space:normal">${esc(x.reason)}</td><td data-l="By">${esc(x.by ? nm(x.by) : "System")}</td></tr>`).join("")}</tbody></table></div>`
+      <td data-l="Reason" class="wide" style="white-space:normal">${esc(x.reason)}</td><td data-l="By">${x.cb ? `<span class="small muted">Government decree</span>` : esc(x.by ? nm(x.by) : "System")}</td></tr>`).join("")}</tbody></table></div>`
       : `<div class="empty"><b>No quota granted yet</b>${hr ? "Use “Adjust quota”, or quota is added automatically when a contract is created or renewed." : "HRD will add your leave quota."}</div>`}</section>
   <section class="card"><div class="card-h"><h2>Requests</h2></div>${reqTable(list, {noEmp:true, empty:"No leave or WFH requests yet."})}</section></div>`;
 }
@@ -1910,7 +1927,7 @@ const toMin = s => { if(!s) return null; const [h,m] = String(s).split(":").map(
 const hhmm = n => n == null || isNaN(n) ? "" : `${pad(Math.floor(n/60) % 24)}:${pad(Math.round(n % 60))}`;
 const sched = () => Object.assign({start:"08:30", end:"17:30", grace:10, breakMin:60, workdays:[1,2,3,4,5]}, cfg().schedule || {});
 // leave buckets for the report: Annual · Bereavement · Marriage · Maternity/Paternity (= Total leave days) and, separately, Sick and Unpaid
-const LVB = {annual:"Annual", bereavement:"Bereavement", marriage:"Marriage", matpat:"Maternity / Paternity", other:"Other leave", sick:"Sick", unpaid:"Unpaid"};
+const LVB = {cb:"Cuti bersama", annual:"Annual", bereavement:"Bereavement", marriage:"Marriage", matpat:"Maternity / Paternity", other:"Other leave", sick:"Sick", unpaid:"Unpaid"};
 function lvBucket(type){
   if(["annual","bereavement","marriage","sick","unpaid"].includes(type)) return type; if(type === "maternity" || type === "paternity") return "matpat";
   const n = (LT()[type]?.name || type || "").toLowerCase();
@@ -1922,6 +1939,7 @@ function leaveMonth(e, ym){
   for(const r of S.D.requests){ if(r.empId !== e.id || r.kind !== "leave" || r.status !== "approved" || !overlap(r.start, r.end, from, to)) continue;
     const b = lvBucket(r.type), cal = unitOf(r) === "calendar";
     for(let d = r.start < from ? from : r.start, end = r.end > to ? to : r.end; d <= end; d = addDays(d, 1)) if(cal || isWorkday(d, e)) o[b]++; }
+  o.cb = cbDays(e, from, to).length; o.annual += o.cb;
   o.total = o.annual + o.bereavement + o.marriage + o.matpat + o.other; return o;
 }
 const isWorkday = (s, who) => { const w = parse(s).getDay(); return (sched().workdays || [1,2,3,4,5]).includes(w) && !holMap(who)[s]; };
@@ -1998,11 +2016,11 @@ function attSummary(list, ym){
 function leaveTable(A, ym){
   const rows = A.lvRows.slice().sort((a, b) => (b[1].lv.total + b[1].lv.sick + b[1].lv.unpaid) - (a[1].lv.total + a[1].lv.sick + a[1].lv.unpaid) || a[0].name.localeCompare(b[0].name));
   const n = v => v ? v : `<span class="muted">0</span>`, sc = sched();
-  const cells = (lv, un, unD, ot, otD) => `<td data-l="Annual" class="r num">${n(lv.annual)}</td><td data-l="Bereavement" class="r num">${n(lv.bereavement)}</td><td data-l="Marriage" class="r num">${n(lv.marriage)}</td><td data-l="Maternity / Paternity" class="r num">${n(lv.matpat)}</td>
+  const cells = (lv, un, unD, ot, otD) => `<td data-l="Annual" class="r num">${n(lv.annual)}${lv.cb ? `<span class="small muted" style="display:block" title="Cuti bersama taken from annual leave">incl. ${lv.cb} CB</span>` : ""}</td><td data-l="Bereavement" class="r num">${n(lv.bereavement)}</td><td data-l="Marriage" class="r num">${n(lv.marriage)}</td><td data-l="Maternity / Paternity" class="r num">${n(lv.matpat)}</td>
     <td data-l="Total leave days" class="r num lv-tot"><b>${lv.total}</b>${lv.other ? ` <span class="small muted" title="Other leave types">+${lv.other} other</span>` : ""}</td><td data-l="Sick leave" class="r num">${n(lv.sick)}</td><td data-l="Unpaid leave" class="r num ${lv.unpaid ? "down" : ""}">${n(lv.unpaid)}</td>
     <td data-l="Untaken break" class="r num" title="${unD} day(s)">${un ? dur(un) : `<span class="muted">—</span>`}</td><td data-l="Overtime" class="r num" title="${otD} day(s)">${ot ? (ot / 60).toFixed(1) + " h" : `<span class="muted">—</span>`}</td>`;
   return `<section class="card"><div class="card-h"><span class="tile c4">${ic("cal")}</span><h2>Leave, breaks &amp; overtime · ${monthLabel(ym)}</h2><span class="tag">${rows.length} employee${rows.length === 1 ? "" : "s"}</span></div>
-    <div class="card-b small muted" style="padding-top:0">Leave days are approved requests in this month (workdays on each person's public-holiday calendar; maternity counts calendar days). Untaken break = how much shorter than the standard ${Number(sc.breakMin ?? 60)}-minute break someone's break scans were, on complete office days. Overtime = after ${esc(sc.end)} on workdays plus time worked on days off.</div>
+    <div class="card-b small muted" style="padding-top:0">Leave days are approved requests in this month plus cuti bersama days taken from annual leave (workdays on each person's public-holiday calendar; maternity counts calendar days). Untaken break = how much shorter than the standard ${Number(sc.breakMin ?? 60)}-minute break someone's break scans were, on complete office days. Overtime = after ${esc(sc.end)} on workdays plus time worked on days off.</div>
     <div class="tw"><table class="t rt lvt"><thead><tr><th>Employee</th><th class="r">Annual</th><th class="r">Bereave&shy;ment</th><th class="r">Marriage</th><th class="r">Mat. / Pat.</th><th class="r">Total leave days</th><th class="r">Sick leave</th><th class="r">Unpaid leave</th><th class="r">Untaken break</th><th class="r">Overtime</th></tr></thead><tbody>
     ${rows.map(([e, r]) => `<tr class="click" data-act="open-emp" data-id="${e.id}" data-tab="leave"><td class="wide">${who(e.id, e.office || e.division || "")}</td>${cells(r.lv, r.untaken, r.untakenDays, r.ot, r.otDays)}</tr>`).join("") || `<tr><td colspan="10"><div class="empty">No leave, breaks or overtime this month.</div></td></tr>`}
     ${rows.length ? `<tr class="lv-sum"><td class="wide"><b>Total</b></td>${cells(A.lv, A.untaken, A.untakenDays, A.ot, A.otDays)}</tr>` : ""}</tbody></table></div></section>`;
@@ -2025,7 +2043,7 @@ function vAttendance(){
     ${kpi("Unexcused absences", A.absent, "workdays with no punch, leave or WFH", A.absent ? "warn" : "")}${kpi("Missing punches", A.missingOut, "no check-in or check-out")}
     ${kpi("On leave · WFH", `${A.leave} · ${A.wfh}`, "approved or logged days")}
     ${kpi("Hours worked", Math.round(A.mins / 60).toLocaleString(), A.workDays ? `avg ${dur(A.mins / A.workDays)} per day` : "breaks excluded")}${kpi("Break time", Math.round(A.brk / 60).toLocaleString() + " h", A.workDays ? `avg ${dur(A.brk / A.workDays)} per day` : "from punches between in and out")}
-    ${kpi("Total leave days", A.lv.total, `Annual ${A.lv.annual} · Bereav. ${A.lv.bereavement} · Marriage ${A.lv.marriage} · Mat/Pat ${A.lv.matpat}${A.lv.other ? ` · Other ${A.lv.other}` : ""}`)}${kpi("Total sick leave", A.lv.sick, "approved sick days")}${kpi("Total unpaid leave", A.lv.unpaid, "approved unpaid days", A.lv.unpaid ? "warn" : "")}
+    ${kpi("Total leave days", A.lv.total, `Annual ${A.lv.annual}${A.lv.cb ? ` (incl. ${A.lv.cb} cuti bersama)` : ""} · Bereav. ${A.lv.bereavement} · Marriage ${A.lv.marriage} · Mat/Pat ${A.lv.matpat}${A.lv.other ? ` · Other ${A.lv.other}` : ""}`)}${kpi("Total sick leave", A.lv.sick, "approved sick days")}${kpi("Total unpaid leave", A.lv.unpaid, "approved unpaid days", A.lv.unpaid ? "warn" : "")}
     ${kpi("Total untaken break", dur(A.untaken), `${A.untakenDays} day(s) under ${Number(sc.breakMin ?? 60)} min break`, A.untaken ? "warn" : "")}${kpi("Total overtime", (A.ot / 60).toFixed(1) + " h", `${A.otDays} day(s) · after ${esc(sc.end)} and days off`)}</div>`;
   // daily chart
   const daysInM = []; for(let s = `${ym}-01`; s <= cov && s.slice(0,7) === ym; s = addDays(s,1)) if(list.some(e => isWorkday(s, e))) daysInM.push(s);
@@ -2431,8 +2449,8 @@ async function download(filename, data){
 const csvCell = v => /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g,'""')}"` : String(v);
 function attCSV(){
   const ym = attMonth(), A = attSummary(attScope(), ym);
-  const head = ["Employee ID","Name","Office","Division","Department","Workdays","Present","Late","Late minutes","Absent","Leave","WFH","Missing punches","Average check-in","Hours worked","Break hours","Average hours per day","Average break per day (min)","Overtime hours","Attendance rate %","Annual leave days","Bereavement leave days","Marriage leave days","Maternity/Paternity leave days","Other leave days","Total leave days","Sick leave days","Unpaid leave days","Untaken break (min)","Untaken break days","Public holidays"];
-  const lines = [head].concat(A.rows.map(([e,r]) => [e.empNo, e.name, e.office||"", e.division||"", e.dept, r.expected, r.present, r.late, r.lateMin, r.absent, r.leave, r.wfh, r.missingOut, r.avgIn, (r.mins/60).toFixed(2), (r.brk/60).toFixed(2), (r.avgWork/60).toFixed(2), Math.round(r.avgBrk), (r.ot/60).toFixed(2), r.rate == null ? "" : r.rate.toFixed(1), r.lv.annual, r.lv.bereavement, r.lv.marriage, r.lv.matpat, r.lv.other, r.lv.total, r.lv.sick, r.lv.unpaid, Math.round(r.untaken), r.untakenDays, holCal(e)]));
+  const head = ["Employee ID","Name","Office","Division","Department","Workdays","Present","Late","Late minutes","Absent","Leave","WFH","Missing punches","Average check-in","Hours worked","Break hours","Average hours per day","Average break per day (min)","Overtime hours","Attendance rate %","Annual leave days","of which cuti bersama","Bereavement leave days","Marriage leave days","Maternity/Paternity leave days","Other leave days","Total leave days","Sick leave days","Unpaid leave days","Untaken break (min)","Untaken break days","Public holidays"];
+  const lines = [head].concat(A.rows.map(([e,r]) => [e.empNo, e.name, e.office||"", e.division||"", e.dept, r.expected, r.present, r.late, r.lateMin, r.absent, r.leave, r.wfh, r.missingOut, r.avgIn, (r.mins/60).toFixed(2), (r.brk/60).toFixed(2), (r.avgWork/60).toFixed(2), Math.round(r.avgBrk), (r.ot/60).toFixed(2), r.rate == null ? "" : r.rate.toFixed(1), r.lv.annual, r.lv.cb, r.lv.bereavement, r.lv.marriage, r.lv.matpat, r.lv.other, r.lv.total, r.lv.sick, r.lv.unpaid, Math.round(r.untaken), r.untakenDays, holCal(e)]));
   return lines.map(l => l.map(csvCell).join(",")).join("\n");
 }
 function pAttendance(e){
@@ -3398,12 +3416,13 @@ function vSettings(){
     const years = [...new Set(hs.map(h => h.date.slice(0,4)))], users = activeE().filter(e => !e.system && holCal(e) === hc).length;
     const missing = (HOL_PRESET[hc] || []).filter(([d]) => !hs.some(h => h.date === d)).length;
     body = `<div class="card-b stack"><div class="row" style="justify-content:space-between"><div class="seg">${Object.entries(HCAL).map(([c, l]) => `<button type="button" data-act="holtab" data-v="${c}" aria-pressed="${hc === c}">${l} (${c})</button>`).join("")}</div><span class="small muted">${users} employee${users === 1 ? "" : "s"} follow the ${HCAL[hc]} calendar · set per person in Profile → Edit</span></div>
-      <p class="muted">${hc === "ID" ? "Indonesian public holidays and collective leave days (cuti bersama) from the SKB 3 Menteri. Neither is counted as a leave day or an absence. Delete a cuti bersama day if your company takes it out of annual leave instead." : "Australian national public holidays observed in every state (New Year, Australia Day, Easter, Anzac Day, Christmas, Boxing Day and their substitute days). Add state days yourself — e.g. Labour Day or King's Birthday — and tick the office they apply to."} Not counted as leave days or absences.</p>
+      <p class="muted">${hc === "ID" ? "Indonesian public holidays and collective leave days (cuti bersama) from the SKB 3 Menteri. Public holidays are days off. For each cuti bersama choose how it's treated: <b>deducts annual leave</b> (office closed, 1 day taken from everyone's annual leave — the default), <b>company holiday</b> (office closed, no deduction) or <b>normal working day</b>." : "Australian national public holidays observed in every state (New Year, Australia Day, Easter, Anzac Day, Christmas, Boxing Day and their substitute days). Add state days yourself — e.g. Labour Day or King's Birthday — and tick the office they apply to. Not counted as leave days or absences."}</p>
+      ${hc === "ID" ? `<label class="f" style="max-width:340px"><span>Take cuti bersama from annual leave starting</span><input type="date" data-cfg="cbFrom" value="${esc(cfg().cbFrom || CB_FROM_DEFAULT)}" ${ro ? "disabled" : ""}><small>Earlier cuti bersama aren't deducted — set this to 1 January if you haven't deducted this year's days by hand.</small></label>` : ""}
       ${ro || !missing ? "" : `<div class="note">${ic("cal")}<div><b>${missing} official ${HCAL[hc]} holiday${missing === 1 ? "" : "s"} for 2026–2027 not added yet.</b> <button class="btn sm" type="button" data-act="hol-preset" data-v="${hc}">${ic("plus")}Add the official ${hc} list</button></div></div>`}</div>
-    <div class="list">${years.map(y => `<div class="li" style="background:var(--sunk);font-weight:600">${y}<span class="small muted" style="font-weight:400">· ${hs.filter(h => h.date.startsWith(y)).length} day(s)</span></div>` + hs.filter(h => h.date.startsWith(y)).map(h => `<div class="li"><span class="tag">${fmt(h.date)} · ${DOWL[parse(h.date).getDay()].slice(0,3)}</span><span class="grow">${esc(h.name)}${h.kind === "cuti" ? ` <span class="pill p-info">cuti bersama</span>` : ""} <span class="small muted">· ${h.offices?.length ? h.offices.map(esc).join(", ") : "all offices"}</span></span>${ro?"":`<button class="ib plain" type="button" data-act="hol-del" data-i="${(cfg().holidays||[]).indexOf(h)}" aria-label="Remove ${esc(h.name)}">${ic("trash")}</button>`}</div>`).join("")).join("") || `<div class="empty">No ${HCAL[hc]} holidays added yet.</div>`}</div>
+    <div class="list">${years.map(y => `<div class="li" style="background:var(--sunk);font-weight:600">${y}<span class="small muted" style="font-weight:400">· ${hs.filter(h => h.date.startsWith(y)).length} day(s)</span></div>` + hs.filter(h => h.date.startsWith(y)).map(h => `<div class="li"><span class="tag">${fmt(h.date)} · ${DOWL[parse(h.date).getDay()].slice(0,3)}</span><span class="grow">${esc(h.name)}${h.kind === "cuti" ? ` <span class="pill ${cbMode(h) === "deduct" ? "p-pending" : cbMode(h) === "work" ? "p-neutral" : "p-info"}">cuti bersama</span>${ro ? ` <span class="small muted">· ${CB_MODES[cbMode(h)]}</span>` : ` <select class="cb-mode" data-holmode="${(cfg().holidays||[]).indexOf(h)}" aria-label="How ${esc(h.name)} is treated">${Object.entries(CB_MODES).map(([k, l]) => `<option value="${k}" ${cbMode(h) === k ? "selected" : ""}>${l}</option>`).join("")}</select>`}` : ""} <span class="small muted">· ${h.offices?.length ? h.offices.map(esc).join(", ") : "all offices"}</span></span>${ro?"":`<button class="ib plain" type="button" data-act="hol-del" data-i="${(cfg().holidays||[]).indexOf(h)}" aria-label="Remove ${esc(h.name)}">${ic("trash")}</button>`}</div>`).join("")).join("") || `<div class="empty">No ${HCAL[hc]} holidays added yet.</div>`}</div>
     ${ro ? "" : `<form class="card-b row" data-draft="hol" data-submit="hol" style="border-top:1px solid var(--line);align-items:flex-end"><label class="f" style="flex:0 1 180px"><span>Date</span><input type="date" name="date" value="${esc(dv("hol","date",""))}"></label>
       <label class="f" style="flex:1 1 220px"><span>Name</span><input type="text" name="name" value="${esc(dv("hol","name",""))}" placeholder="${hc === "AU" ? "e.g. King's Birthday" : "e.g. Hari Suci Nyepi"}"></label>
-      <label class="f" style="flex:0 1 190px"><span>Type</span><select name="kind"><option value="">Public holiday</option>${hc === "ID" ? `<option value="cuti" ${dv("hol","kind","") === "cuti" ? "selected" : ""}>Cuti bersama</option>` : ""}</select></label><button class="btn pri" type="submit">Add ${hc} holiday</button>
+      <label class="f" style="flex:0 1 300px"><span>Type</span><select name="kind"><option value="">Public holiday — not a working day</option>${Object.entries(CB_MODES).map(([k, l]) => `<option value="cuti:${k}" ${dv("hol","kind","") === "cuti:" + k ? "selected" : ""}>Cuti bersama — ${l.toLowerCase()}</option>`).join("")}</select></label><button class="btn pri" type="submit">Add ${hc} holiday</button>
       <fieldset style="border:0;padding:0;margin:0;flex:1 1 100%"><legend class="small muted" style="margin-bottom:6px">Applies to (leave empty for all offices)</legend><div class="row">${(cfg().offices||[]).map(o => `<label class="chk"><input type="checkbox" name="offices" data-multi="1" value="${esc(o)}" ${(dv("hol","offices",[])||[]).includes(o)?"checked":""}><span>${esc(o)}</span></label>`).join("")}</div></fieldset></form>`}`;
   } else if(tab === "access"){
     const accts = [...S.D.employees].filter(e => e.status !== "Resigned").sort((a,b) => (b.admin?1:0) - (a.admin?1:0) || (b.role==="hrd"?1:0) - (a.role==="hrd"?1:0) || a.name.localeCompare(b.name));
@@ -4103,7 +4122,7 @@ document.addEventListener("click", async ev => {
     case "flow-mv": if(!isAdmin()) return; { const f = clone(cfg().flows[b.dataset.k]), i = Number(b.dataset.i), j = i + Number(v); [f[i], f[j]] = [f[j], f[i]]; await setCfg("flows."+b.dataset.k, f); return; }
     case "flow-rm": if(!isAdmin()) return; { const f = clone(cfg().flows[b.dataset.k]); f.splice(Number(b.dataset.i), 1); await setCfg("flows."+b.dataset.k, f); return; }
     case "holtab": S.ui.holTab = v; render(); return;
-    case "hol-preset": { const cur = cfg().holidays || [], add = (HOL_PRESET[v] || []).filter(([d]) => !cur.some(h => h.date === d && hCountry(h) === v)).map(([date, name, kind]) => Object.assign({date, name, offices:[], country:v}, kind ? {kind} : {}));
+    case "hol-preset": { const cur = cfg().holidays || [], add = (HOL_PRESET[v] || []).filter(([d]) => !cur.some(h => h.date === d && hCountry(h) === v)).map(([date, name, kind]) => Object.assign({date, name, offices:[], country:v}, kind ? {kind, mode:"deduct"} : {}));
       await setCfg("holidays", cur.concat(add)); audit("holidays_added", `${HCAL[v]} official list`, `${add.length} day(s)`); toast(`${add.length} ${HCAL[v]} holiday${add.length === 1 ? "" : "s"} added.`); return; }
     case "hol-del": await setCfg("holidays", (cfg().holidays||[]).filter((h, i) => String(i) !== b.dataset.i)); return;
     case "crit-del": { const c = clone(cfg().criteria); c.splice(Number(b.dataset.i), 1); await setCfg("criteria", c); return; }
@@ -4268,6 +4287,7 @@ document.addEventListener("change", async ev => {
     return updateJobs(list, e => { if(e.jobLevel !== name || e.role === "hrd") return null; const r = roleFor(name, false); return r !== e.role ? Object.assign(clone(e), {role:r}) : null; }, `Access for ${name} updated.`); }
   if(t.dataset.wd){ const w = Number(t.dataset.wd), cur = sched().workdays || []; await setCfg("schedule.workdays", t.checked ? [...new Set(cur.concat([w]))].sort() : cur.filter(x => x !== w)); return; }
   if(t.classList.contains("flow-add") && t.value){ await setCfg("flows."+t.dataset.k, (cfg().flows[t.dataset.k]||[]).concat([t.value])); return; }
+  if(t.dataset.holmode !== undefined){ const hs = clone(cfg().holidays || []), h = hs[Number(t.dataset.holmode)]; if(h && CB_MODES[t.value]){ h.mode = t.value; await setCfg("holidays", hs); } return; }
   if(t.dataset.cfg){ const val = t.type === "checkbox" ? t.checked : t.type === "number" ? Number(t.value||0) : t.value; await setCfg(t.dataset.cfg, val); if(/^hrd(Approver|Backup)$/.test(t.dataset.cfg) && canCfg(t.dataset.cfg)) await reassignHrdSteps(); return; }
   const f = syncDraft(t); if(!f) return;
   const dk = f.dataset.draft;
@@ -4335,8 +4355,8 @@ document.addEventListener("submit", async ev => {
     return run(async () => { await store.put("employees", e); audit("note_added", e.name, dv(k,"kind","Training")); if(e.id !== S.me) await notify(e.id, `New ${dv(k,"kind","Training").toLowerCase()} note on your profile`, `Added by ${nm(S.me)}`, "profile", e.id, "note",
       {intro:`${nm(S.me)} added a ${dv(k,"kind","Training").toLowerCase()} entry to your history.`, quote:text, cta:{label:"View my history", go:"profile", ref:e.id}}); }, "Entry saved."); }
   if(s === "hol"){ const date = dv("hol","date",""), name = (dv("hol","name","")||"").trim(); if(!date || !name){ toast("Enter a date and a name."); return; }
-    const offices = dv("hol","offices",[]) || [], country = S.ui.holTab || "ID", kind = dv("hol","kind","") === "cuti" && country === "ID" ? "cuti" : ""; delete S.drafts.hol;
-    return setCfg("holidays", (cfg().holidays||[]).filter(h => !(h.date === date && hCountry(h) === country && JSON.stringify(h.offices||[]) === JSON.stringify(offices))).concat([Object.assign({date, name, offices, country}, kind ? {kind} : {})])); }
+    const offices = dv("hol","offices",[]) || [], country = S.ui.holTab || "ID", kv = String(dv("hol","kind","") || ""), mode = kv.startsWith("cuti") ? (kv.split(":")[1] || "deduct") : ""; delete S.drafts.hol;
+    return setCfg("holidays", (cfg().holidays||[]).filter(h => !(h.date === date && hCountry(h) === country && JSON.stringify(h.offices||[]) === JSON.stringify(offices))).concat([Object.assign({date, name, offices, country}, mode ? {kind:"cuti", mode} : {})])); }
   if(s === "crit"){ const n = (dv("crit","name","")||"").trim(); if(!n) return; delete S.drafts.crit; return setCfg("criteria", (cfg().criteria||[]).concat([n])); }
 });
 document.addEventListener("dragover", ev => { const d = ev.target.closest?.("#att-drop,#emp-drop,#restore-drop,#pay-drop"); if(d){ ev.preventDefault(); d.classList.add("over"); } });
