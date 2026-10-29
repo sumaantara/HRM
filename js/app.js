@@ -348,7 +348,7 @@ const dv = (k, n, d) => (S.drafts[k] && n in S.drafts[k]) ? S.drafts[k][n] : d;
    rd/<uid>, ph/<uid>   per-person read receipts and self-uploaded profile photo
    audit/<uid>/m/<yyyy-mm>  each person's own monthly audit trail
    requests, notifs, counters   shared working data (Contributors write) */
-const APP_VERSION = "4.8.1", SCHEMA = 2;
+const APP_VERSION = "4.9.0", SCHEMA = 2;
 const PRIVATE_FIELDS = ["phone","gender","birthDate","address","exitReason","contract","contracts","notes","quotaLog"];
 const SUB_COLS = ["employees","private","requests","candidates","tasks","reviews","reminders","notifs","announcements","attendance","attImports","backups","dec","links","rd","ph","sub","payslips","payruns","appraisals","kiosks","facestat"];
 const CORE_COLS = ["employees","requests","tasks","notifs","announcements","attendance"];
@@ -2197,6 +2197,9 @@ async function readAttFile(file){
     if(isMachine(af)){ const has = f => sheets.some(([n, r]) => attHeader(r, f).hi >= 0); if(!has(af)){ const other = af === "f1" ? "f2" : "f1"; if(has(other)){ af = other; S.ui.attFmt = other; } } }
     S.ui.attParse = {file:file.name, sheets, sheet:0, dmy:true, fmt:af, office, mkey, machine:mach?.name || "", assign:{}};
     if(af === "other") autoMap(); else pickAttSheet(S.ui.attParse);
+    // no machine picked: recognise it from the people on it (machine exports carry no machine name — every machine says "Device ID 1")
+    if(isMachine(af) && !mach && MACHINES().length){ const P = S.ui.attParse; P.mkey = ""; P.office = ""; const g = detectMachine(P);
+      if(g){ P.mkey = g.id; P.machine = g.name; P.office = g.office; P.detected = Math.round(g.score * 100); } }
     render();
   } catch(err){ S.ui.attParse = {fmt:af, error: err && err.message === "load" ? "The spreadsheet reader couldn't load. Check your connection and try again." : "This file couldn't be read. Upload an .xlsx, .xls or .csv export."}; render(); }
 }
@@ -2246,9 +2249,10 @@ function attStamp(v, dmy){
   const str = String(v || "").trim(); return {date:parseDateVal(str, dmy), t:parseTimeVal(str.split(/\s+/).slice(1).join(" ") || "")};
 }
 /* F2 machine: "Attend. Logs" grid — per person a row of day numbers, an "ID : … Name : …" row, then one cell per day with that day's scans */
-function f2Punches(rows){
+function f2Punches(rows, dmy = true){
   const out = []; let range = null, bad = 0;
-  for(const r of rows.slice(0, 8)) for(const c of r){ const m = String(c).match(/(\d{4}-\d{2}-\d{2})\s*~\s*(\d{4}-\d{2}-\d{2})/); if(m && !range) range = [m[1], m[2]]; }
+  // "Date : 2026-09-01 ~ 2026-09-29" or "Date : 01/09/2026 ~ 30/09/2026" (machines differ)
+  for(const r of rows.slice(0, 8)) for(const c of r){ const m = String(c).match(/(\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4})\s*~\s*(\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4})/); if(m && !range){ const a = parseDateVal(m[1], dmy), b = parseDateVal(m[2], dmy); if(a && b && a <= b) range = [a, b]; } }
   if(!range) return {out, bad:1, range:null};
   const dates = []; for(let d = range[0]; d <= range[1] && dates.length < 400; d = addDays(d, 1)) dates.push(d);
   for(let i = 0; i < rows.length; i++){
@@ -2267,6 +2271,13 @@ function f2Punches(rows){
     }
   }
   return {out, bad, range};
+}
+// which listed machine a file most likely comes from: overlap of "machine ID + name" with that machine's last upload
+function detectMachine(P){
+  const res = buildStructured(Object.assign({}, P, {assign:{}})), mine = new Set(res.machine.map(m => `${m.mid}:${attKey(m.name)}`)); if(mine.size < 2) return null;
+  const scored = MACHINES().map(m => { const last = [...S.D.attImports].filter(x => x.mkey === m.id && x.roster?.length).sort((a, b) => b.at.localeCompare(a.at))[0]; if(!last) return null;
+    const theirs = new Set(last.roster), both = [...mine].filter(x => theirs.has(x)).length; return {m, score: both / Math.min(mine.size, theirs.size)}; }).filter(Boolean).sort((a, b) => b.score - a.score);
+  return scored[0] && scored[0].score >= 0.6 && (!scored[1] || scored[0].score - scored[1].score >= 0.2) ? Object.assign({}, scored[0].m, {score:scored[0].score}) : null;
 }
 function machineSettings(ro){
   const ms = MACHINES(), offices = cfg().offices || [], missing = MACHINE_PRESET.filter(([n]) => !ms.some(m => m.name === n));
@@ -2300,25 +2311,32 @@ function buildStructured(P){
       total++; const mid = String(r[col.id] ?? "").trim(), mname = String(col.name != null ? r[col.name] : "").trim();
       const st = attStamp(r[col.time], P.dmy); if(!st.date || st.t == null){ bad++; continue; }
       add(mid, mname, st.date, st.t);
-    } else { const g = f2Punches(rows); bad = g.bad; total = g.out.length; for(const x of g.out) add(x.mid, x.name, x.date, x.t); }
+    } else { const g = f2Punches(rows, P.dmy !== false); bad = g.bad; total = g.out.length; for(const x of g.out) add(x.mid, x.name, x.date, x.t); }
     // Match by the "Name on attendance machine" on each profile — in ANY office, so people who visit another branch are still recognised
     // (machine IDs restart at 1 on every machine, so they are never used). Order: a name HR linked to this machine before › someone based in
     // this machine's office › the only person in the company with that name › exact full name. Anything else HR confirms.
     const live = E().filter(e => !e.system && e.status !== "Resigned"), home = e => (e.office || "") === (P.office || "");
+    const nameCount = new Map(); for(const m of machine.values()){ const k = attKey(m.name); if(k) nameCount.set(k, (nameCount.get(k) || 0) + 1); }
+    const days = [...machine.values()].reduce((s2, m) => Math.max(s2, m.days.size), 0);
     for(const [key, m] of machine){
-      const a = P.assign[key], k = attKey(m.name);
-      const linked = k ? live.filter(e => ((e.attAt || {})[P.mkey] || []).includes(k)) : [];
+      const a = P.assign[key], k = attKey(m.name), at = e => (e.attAt || {})[P.mkey] || [];
+      m.dup = k && nameCount.get(k) > 1 ? nameCount.get(k) : 0;   // two machine users with the same name (re-enrolled, or two different people)
+      const linked = live.filter(e => (m.mid && at(e).includes("#" + m.mid)) || (!m.dup && k && at(e).includes(k)));
       const byAtt = k ? live.filter(e => attNames(e.attName).includes(k)) : [], byHome = byAtt.filter(home);
       const byFull = k && !byAtt.length ? live.filter(e => attKey(e.name) === k) : [];
       let auto = null, how = "";
       if(linked.length === 1){ auto = linked[0]; how = "linked to this machine"; }
+      else if(m.dup){ how = ""; }
       else if(byHome.length === 1){ auto = byHome[0]; how = "attendance name"; }
       else if(!byHome.length && byAtt.length === 1){ auto = byAtt[0]; how = "attendance name"; }
       else if(byFull.length === 1){ auto = byFull[0]; how = "full name"; }
-      m.conflict = !auto && byAtt.length > 1 ? byAtt.map(e => `${e.name} (${e.office || "no office"})`) : null;
-      const cand = k && !auto && !m.conflict ? live.filter(e => !attNames(e.attName).length && (attKey(e.name.split(" ")[0]) === k || attKey(e.name).startsWith(k))) : [];
+      // someone from another office who scans here on many days is more likely a different person with the same short name: HR confirms once
+      m.confirm = auto && how !== "linked to this machine" && !home(auto) && m.days.size > 3 && days > 5 ? auto : null;
+      if(m.confirm) auto = null;
+      m.conflict = !auto && !m.dup && !m.confirm && byAtt.length > 1 ? byAtt.map(e => `${e.name} (${e.office || "no office"})`) : null;
+      const cand = k && !auto && !m.conflict && !m.confirm ? live.filter(e => !attNames(e.attName).length && (attKey(e.name.split(" ")[0]) === k || attKey(e.name).startsWith(k))) : [];
       const candH = cand.filter(home);
-      m.suggest = candH.length === 1 ? candH[0] : cand.length === 1 ? cand[0] : null;
+      m.suggest = m.confirm || (candH.length === 1 ? candH[0] : cand.length === 1 ? cand[0] : null);
       m.empId = a === "skip" ? null : (a || auto?.id || null); m.how = a ? "chosen" : how;
       m.visit = m.empId && !home(emp(m.empId) || {}) ? (emp(m.empId)?.office || "another office") : "";
     }
@@ -2400,9 +2418,10 @@ function uploadPanel(){
         <span class="tile ${af === k ? "c1" : "c5"}">${ic(f.icon)}</span><span><b>${esc(f.label)}</b><span class="small muted">${esc(f.hint)}</span></span></button>`).join("")}</div>
       ${needOffice ? `<label class="f" style="max-width:320px"><span>Which office's machine?</span><select id="att-fmt-office"><option value="">Choose office</option>${offices.map(o => `<option ${off === o ? "selected" : ""}>${esc(o)}</option>`).join("")}</select><small>Machine IDs are matched within this office only.</small></label>` : ""}
       ${ATT_TPL[af] ? `<div><button class="btn sm" type="button" data-act="att-tpl" data-v="${af}">${ic("download")}Download ${esc(ATT_FMT[af].label.split(" · ")[0])} template</button></div>` : ""}
-      ${needMach ? `<label class="f" style="max-width:360px"><span>Which machine?</span><select id="att-mach"><option value="">Choose machine</option>${MACHINES().map(m => `<option value="${esc(m.id)}" ${S.ui.attMach === m.id ? "selected" : ""}>${esc(m.name)} · ${esc(m.office)}</option>`).join("")}</select><small>Machines are listed in Settings → Attendance. F1 or F2 is detected from the file.</small></label>` : ""}
+      ${needMach ? `<label class="f" style="max-width:360px"><span>Which machine?</span><select id="att-mach"><option value="">Recognise automatically</option>${MACHINES().map(m => `<option value="${esc(m.id)}" ${S.ui.attMach === m.id ? "selected" : ""}>${esc(m.name)} · ${esc(m.office)}</option>`).join("")}</select><small>Machines are listed in Settings → Attendance. F1 or F2 is detected from the file.</small></label>` : ""}
       ${needOffice ? `<p class="small muted">Tip: list your machines in Settings → Attendance so two machines in one office (e.g. two floors) are kept apart.</p>` : ""}
-      ${(needOffice && !off) || (needMach && !mach) ? `<div class="note">${ic("info")}<div>Choose the ${needMach ? "machine" : "office"} first, then select the file.</div></div>`
+      ${needMach && !mach ? `<p class="small muted">Not sure? Just select the file — the HRM recognises a machine from the people on it once it has been uploaded before.</p>` : ""}
+      ${needOffice && !off ? `<div class="note">${ic("info")}<div>Choose the office first, then select the file.</div></div>`
         : `<label class="drop" id="att-drop"><input type="file" id="att-file" accept=".xlsx,.xls,.csv"><span class="tile c1">${ic("upload")}</span><b>Drop the file here or click to choose</b><span class="small muted">${isMachine(af) ? `The machine's export as it is (.xls) — the sheet “${af === "f1" ? "Attendance Details" : "Attend. Logs"}” is read automatically.` : af === "other" ? "Any export with one row per day (check-in/check-out) or one row per scan." : "Fill in the template above, or any sheet with the same column names."}</span></label>`}
       ${P?.error ? `<ul class="errs"><li>${esc(P.error)}</li></ul>` : ""}
       <p class="small muted">Uploading the same dates again replaces those days for the people in the file.</p></div></section>`;
@@ -2415,11 +2434,13 @@ function uploadPanel(){
   return `<section class="card"><div class="card-h"><span class="tile c5">${ic(ATT_FMT[P.fmt].icon)}</span><h2>${esc(P.file)}<br><span class="small muted" style="font-family:var(--f-body);font-weight:500">${esc(ATT_FMT[P.fmt].label)}${P.machine ? " · " + esc(P.machine) : ""}${P.office ? " · " + esc(P.office) : ""} · ${res.total} rows</span></h2>${close}</div>
     <div class="card-b stack">
       ${P.sheets.length > 1 ? `<label class="f" style="max-width:260px"><span>Sheet</span><select id="att-sheet">${P.sheets.map(([n],i) => `<option value="${i}" ${P.sheet===i?"selected":""}>${esc(n)}</option>`).join("")}</select></label>` : ""}
+      ${isMachine(P.fmt) && MACHINES().length ? `<div class="row" style="align-items:flex-end;gap:12px"><label class="f" style="max-width:360px;flex:1"><span>Machine</span><select id="att-pmach"><option value="">Choose the machine this file is from</option>${MACHINES().map(m => `<option value="${esc(m.id)}" ${P.mkey === m.id ? "selected" : ""}>${esc(m.name)} · ${esc(m.office)}</option>`).join("")}</select></label>
+        ${P.detected && P.machine ? `<span class="pill p-approved" style="margin-bottom:10px">${ic("check")}Recognised · ${P.detected}% of the people match its last upload</span>` : !P.mkey ? `<span class="small" style="color:var(--warn);margin-bottom:10px">Pick the machine — it hasn't been uploaded before, so it can't be recognised yet.</span>` : ""}</div>` : ""}
       ${res.headerMissing ? `<ul class="errs"><li>${P.fmt === "f1" ? "This sheet has no “ID / Name / Att.Time” columns. Pick the sheet “Attendance Details”." : P.fmt === "f2" ? "This sheet has no “ID : … Name : …” blocks. Pick the sheet “Attend. Logs”." : "The columns weren't recognised. Use the template's column names (Employee ID, Name, Date, Check In / Start, Check Out / End)."}</li></ul>` : ""}
       ${isMachine(P.fmt) && res.machine.length ? `<div><h3 class="sub">People on the machine</h3><p class="small muted">Machine users are linked by the <b>name on the attendance machine</b> set on each profile — people from other offices who visited ${esc(P.machine || P.office)} are recognised too (machine IDs aren't used — every machine starts at 1). Pick the employee for anyone not linked; the HRM remembers it so it's automatic next time.</p>
         <div class="tw" style="border:1px solid var(--line);border-radius:10px"><table class="t rt"><thead><tr><th>Machine ID</th><th>Name on machine</th><th class="r">Days</th><th>Employee</th></tr></thead><tbody>
         ${res.machine.sort((a,b) => (!!a.empId - !!b.empId) || String(a.name).localeCompare(String(b.name))).map(m => `<tr><td data-l="Machine ID" class="num">${esc(m.mid || "—")}</td><td data-l="Name">${esc(m.name || "—")}</td><td data-l="Days" class="r num">${m.days}</td>
-          <td data-l="Employee"><select data-attassign="${esc(m.key)}" aria-label="Employee for machine user ${esc(m.name || m.mid)}"><option value="skip" ${!m.empId ? "selected" : ""}>— not imported —</option>${[["In " + (P.office || "this office"), pool.filter(e => e.status !== "Resigned")], ["Other offices", E().filter(e => !e.system && e.status !== "Resigned" && (e.office || "") !== (P.office || ""))]].filter(([, l]) => l.length).map(([g, l]) => `<optgroup label="${esc(g)}">${l.sort((x, y) => x.name.localeCompare(y.name)).map(e => `<option value="${e.id}" ${m.empId === e.id ? "selected" : ""}>${esc(e.name)} · ${esc(e.empNo)}${g === "Other offices" ? ` · ${esc(e.office || "—")}` : ""}</option>`).join("")}</optgroup>`).join("")}</select>${m.visit ? ` <span class="pill p-info" title="Based in ${esc(m.visit)}">visiting from ${esc(m.visit)}</span>` : ""}${m.how && m.how !== "chosen" ? ` <span class="small muted">matched by ${esc(m.how)}</span>` : ""}${m.conflict ? `<div class="small" style="color:var(--warn)">“${esc(m.name)}” is the attendance name of ${m.conflict.map(esc).join(" and ")} — pick who scanned on this machine; the HRM remembers it for this machine.</div>` : ""}${!m.empId && m.suggest ? ` <button class="btn sm link" type="button" data-act="att-suggest" data-id="${esc(m.key)}" data-v="${esc(m.suggest.id)}">Use ${esc(m.suggest.name)}?</button>` : ""}</td></tr>`).join("")}</tbody></table></div></div>` : ""}
+          <td data-l="Employee"><select data-attassign="${esc(m.key)}" aria-label="Employee for machine user ${esc(m.name || m.mid)}"><option value="skip" ${!m.empId ? "selected" : ""}>— not imported —</option>${[["In " + (P.office || "this office"), pool.filter(e => e.status !== "Resigned")], ["Other offices", E().filter(e => !e.system && e.status !== "Resigned" && (e.office || "") !== (P.office || ""))]].filter(([, l]) => l.length).map(([g, l]) => `<optgroup label="${esc(g)}">${l.sort((x, y) => x.name.localeCompare(y.name)).map(e => `<option value="${e.id}" ${m.empId === e.id ? "selected" : ""}>${esc(e.name)} · ${esc(e.empNo)}${g === "Other offices" ? ` · ${esc(e.office || "—")}` : ""}</option>`).join("")}</optgroup>`).join("")}</select>${m.visit ? ` <span class="pill p-info" title="Based in ${esc(m.visit)}">visiting from ${esc(m.visit)}</span>` : ""}${m.how && m.how !== "chosen" ? ` <span class="small muted">matched by ${esc(m.how)}</span>` : ""}${m.dup && !m.empId ? `<div class="small" style="color:var(--warn)">${m.dup} people on this machine are called “${esc(m.name)}” — pick who machine ID ${esc(m.mid || "?")} is. Same person enrolled twice? Pick the same employee for both.</div>` : ""}${m.confirm && !m.empId ? `<div class="small" style="color:var(--warn)">Scans here on ${m.days} days — is this ${esc(m.confirm.name)} from ${esc(m.confirm.office || "another office")}, or someone else with the same name?</div>` : ""}${m.conflict ? `<div class="small" style="color:var(--warn)">“${esc(m.name)}” is the attendance name of ${m.conflict.map(esc).join(" and ")} — pick who scanned on this machine; the HRM remembers it for this machine.</div>` : ""}${!m.empId && m.suggest ? ` <button class="btn sm link" type="button" data-act="att-suggest" data-id="${esc(m.key)}" data-v="${esc(m.suggest.id)}">Use ${esc(m.suggest.name)}?</button>` : ""}</td></tr>`).join("")}</tbody></table></div></div>` : ""}
       <div class="grid kpis k4">${kpi("Day records", res.recs.length, res.from ? `${fmt(res.from)} – ${fmt(res.to)}` : "—")}${kpi("Employees", res.employees, isMachine(P.fmt) ? `${res.machine.filter(m => m.visit).length ? `incl. ${new Set(res.machine.filter(m => m.visit).map(m => m.empId)).size} visiting · ` : ""}${pool.length} based in ${esc(P.office)}` : `of ${activeE().length} active`)}
         ${kpi("Hours · Break", `${Math.round(totW/60)} h · ${Math.round(totB/60)} h`, res.recs.length ? `avg ${dur(totW / res.recs.length)} worked` : "")}${kpi(P.fmt === "wfh" ? "Skipped rows" : "Missing scans", P.fmt === "wfh" ? res.bad : missN, P.fmt === "wfh" ? "no readable date" : "days with an odd number of scans", (P.fmt === "wfh" ? res.bad : missN) ? "warn" : "")}</div>
       ${sample.length ? `<div class="tw" style="border:1px solid var(--line);border-radius:10px"><table class="t rt"><thead><tr><th>Employee</th><th>Date</th><th>In</th><th>Out</th><th class="r">Break</th><th class="r">Worked</th></tr></thead><tbody>
@@ -2428,7 +2449,7 @@ function uploadPanel(){
       ${!isMachine(P.fmt) ? unmatchedPicker(P, res) : ""}
       ${res.bad && P.fmt !== "wfh" ? `<p class="small muted">${res.bad} row(s) without a readable date/time were skipped.</p>` : ""}
       ${!ok && !res.headerMissing ? `<ul class="errs"><li>${isMachine(P.fmt) ? "Link at least one machine user to an employee." : "No rows could be read."}</li></ul>` : ""}
-      <div class="row end"><button class="btn" type="button" data-act="att-upclose">Cancel</button><button class="btn pri" type="button" data-act="att-import" ${ok?"":"disabled"}>${ic("check")}Import ${res.recs.length} records</button></div>
+      <div class="row end"><button class="btn" type="button" data-act="att-upclose">Cancel</button><button class="btn pri" type="button" data-act="att-import" ${ok && !(isMachine(P.fmt) && MACHINES().length && !P.mkey) ? "" : "disabled"}>${ic("check")}Import ${res.recs.length} records</button></div>
     </div></section>`;
 }
 // preview cells as people read them (Excel keeps dates as day numbers and times as fractions of a day)
@@ -2460,12 +2481,19 @@ function otherPanel(){
 async function importAtt(){
   const P = S.ui.attParse, res = attResult(P); if(!res.recs.length) return;
   const groups = new Map(); for(const r of res.recs){ const k = r.empId + "_" + r.date.slice(0,7); (groups.get(k) || groups.set(k, []).get(k)).push(r); }
-  const now = new Date().toISOString(), log = {id:uid("ai"), file:P.file, fmt:P.fmt, office:P.office || "", machine:P.machine || "", by:S.me, at:now, rows:res.total, records:res.recs.length, employees:res.employees, from:res.from, to:res.to, unmatched:res.unmatched.length};
+  const now = new Date().toISOString(), log = {id:uid("ai"), file:P.file, fmt:P.fmt, office:P.office || "", machine:P.machine || "", mkey:P.mkey || "", roster:isMachine(P.fmt) ? res.machine.map(m => `${m.mid}:${attKey(m.name)}`).slice(0, 400) : undefined, by:S.me, at:now, rows:res.total, records:res.recs.length, employees:res.employees, from:res.from, to:res.to, unmatched:res.unmatched.length};
   // names to remember: a new name goes on the profile ("Name on attendance machine"); a name another person already uses is remembered
   // for this machine only (e.g. two people called Siti in different offices)
   const liveE = E().filter(e => !e.system && e.status !== "Resigned");
-  const links = isMachine(P.fmt) ? res.machine.filter(m => m.empId && attKey(m.name) && !attNames(emp(m.empId)?.attName).includes(attKey(m.name)) && !((emp(m.empId)?.attAt || {})[P.mkey] || []).includes(attKey(m.name)))
-    .map(m => Object.assign({}, m, {perMachine: liveE.some(x => x.id !== m.empId && attNames(x.attName).includes(attKey(m.name)))})) : attLinks(P);
+  const atOf = (id) => (emp(id)?.attAt || {})[P.mkey] || [];
+  const links = isMachine(P.fmt) ? res.machine.filter(m => m.empId && attKey(m.name)).map(m => {
+      const k = attKey(m.name), e = emp(m.empId), tok = m.dup && m.mid ? "#" + m.mid : k;
+      if(m.how !== "chosen" || atOf(m.empId).includes(tok)){ return attNames(e?.attName).includes(k) || atOf(m.empId).includes(tok) || m.how === "linked to this machine" ? null : Object.assign({}, m, {perMachine:false}); }
+      // HR picked: same-name users on one machine are remembered by machine ID; a visitor or a shared name is remembered for this machine;
+      // anything else becomes the person's attendance name
+      const shared = m.dup || liveE.some(x => x.id !== m.empId && attNames(x.attName).includes(k)) || (attNames(e?.attName).includes(k) && (e?.office || "") !== (P.office || ""));
+      if(!shared && attNames(e?.attName).includes(k)) return null;
+      return Object.assign({}, m, {perMachine:shared, tok}); }).filter(Boolean) : attLinks(P);
   const ok = await run(async () => {
     for(const [k, list] of groups){ const [empId, month] = k.split("_"); const cur = attDoc(empId, month); const doc = cur ? clone(cur) : {id:k, empId, month, days:{}};
       for(const r of list){ let d = {in:r.in || "", out:r.out || ""}; for(const f of ["work","brk","n","miss","src","wfh","note","mp"]) if(r[f] !== undefined && r[f] !== "" && r[f] !== false) d[f] = r[f];
@@ -2483,7 +2511,7 @@ async function importAtt(){
         doc.days[r.date] = d; }
       doc.updatedAt = now; doc.importId = log.id; await store.put("attendance", doc); }
     for(const m of links){ const e = emp(m.empId); if(!e) continue;
-      if(m.perMachine){ const at = clone(e.attAt || {}); at[P.mkey] = [...new Set([...(at[P.mkey] || []), attKey(m.name)])]; await putEmployee(Object.assign(clone(e), {attAt:at})); }
+      if(m.perMachine){ const at = clone(e.attAt || {}); at[P.mkey] = [...new Set([...(at[P.mkey] || []), m.tok || attKey(m.name)])]; await putEmployee(Object.assign(clone(e), {attAt:at})); }
       else await putEmployee(Object.assign(clone(e), {attName:[e.attName, m.name.trim()].filter(Boolean).join(", ")})); }
     await store.put("attImports", log); audit("attendance_imported", P.file, `${ATT_FMT[P.fmt]?.label || P.fmt}${P.office ? " · " + P.office : ""} · ${res.recs.length} records, ${res.from}..${res.to}`);
   }, `Imported ${res.recs.length} records for ${res.employees} employees.${links.length ? ` Saved ${links.length} attendance name(s) on profiles.` : ""}`);
@@ -4326,6 +4354,7 @@ document.addEventListener("change", async ev => {
   if(t.id === "att-sheet"){ S.ui.attParse.sheet = Number(t.value); if(S.ui.attParse.fmt === "other") autoMap(); render(); return; }
   if(t.id === "att-fmt-office"){ S.ui.attFmtOffice = t.value; render(); return; }
   if(t.id === "att-mach"){ S.ui.attMach = t.value; render(); return; }
+  if(t.id === "att-pmach" && S.ui.attParse){ const P = S.ui.attParse, m = machineOf(t.value); P.mkey = m ? m.id : ""; P.machine = m ? m.name : ""; P.office = m ? m.office : ""; P.detected = 0; P.assign = {}; render(); return; }
   if(t.dataset.attassign !== undefined){ S.ui.attParse.assign[t.dataset.attassign] = t.value; render(); return; }
   if(t.id === "att-dmy"){ S.ui.attParse.dmy = t.value === "1"; render(); return; }
   if(t.dataset.attmap){ S.ui.attParse.map[t.dataset.attmap] = t.value === "" ? null : Number(t.value); render(); return; }
