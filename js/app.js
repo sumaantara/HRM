@@ -348,7 +348,7 @@ const dv = (k, n, d) => (S.drafts[k] && n in S.drafts[k]) ? S.drafts[k][n] : d;
    rd/<uid>, ph/<uid>   per-person read receipts and self-uploaded profile photo
    audit/<uid>/m/<yyyy-mm>  each person's own monthly audit trail
    requests, notifs, counters   shared working data (Contributors write) */
-const APP_VERSION = "4.9.0", SCHEMA = 2;
+const APP_VERSION = "4.9.1", SCHEMA = 2;
 const PRIVATE_FIELDS = ["phone","gender","birthDate","address","exitReason","contract","contracts","notes","quotaLog"];
 const SUB_COLS = ["employees","private","requests","candidates","tasks","reviews","reminders","notifs","announcements","attendance","attImports","backups","dec","links","rd","ph","sub","payslips","payruns","appraisals","kiosks","facestat"];
 const CORE_COLS = ["employees","requests","tasks","notifs","announcements","attendance"];
@@ -2157,8 +2157,8 @@ const attLinks = P => Object.entries(P.assign || {}).filter(([k, v]) => v && v !
    WFH work-from-home log: date, start, end, break minutes and notes; the day counts as WFH.
    other  any spreadsheet, columns matched by hand (one row per day or one row per scan). */
 const ATT_FMT = {
-  f1: {label:"F1 · Fingerprint machine", hint:"Denpasar & Surabaya — machine export (.xls), sheet “Attendance Details”", icon:"fp"},
-  f2: {label:"F2 · Fingerprint machine", hint:"Jakarta & PeraONE Xperience — machine export (.xls), sheet “Attend. Logs”", icon:"fp"},
+  f1: {label:"F1 · Fingerprint machine", hint:"Denpasar Office Lt 1 · Surabaya Office — machine export (.xls), sheet “Attendance Details”", icon:"fp"},
+  f2: {label:"F2 · Fingerprint machine", hint:"Denpasar Office Lt 3 · Jakarta Office · Gili Trawangan · Gili Air (Ratu Village & JBH, Gilitik) — machine export (.xls), sheet “Attend. Logs”", icon:"fp"},
   daily: {label:"Daily sheet", hint:"Manual sheet — one row per person per day", icon:"cal"},
   wfh: {label:"WFH log", hint:"Work-from-home days with start, end and break", icon:"home"},
   other: {label:"Other export", hint:"Any spreadsheet — match the columns yourself", icon:"doc"},
@@ -2278,6 +2278,12 @@ function detectMachine(P){
   const scored = MACHINES().map(m => { const last = [...S.D.attImports].filter(x => x.mkey === m.id && x.roster?.length).sort((a, b) => b.at.localeCompare(a.at))[0]; if(!last) return null;
     const theirs = new Set(last.roster), both = [...mine].filter(x => theirs.has(x)).length; return {m, score: both / Math.min(mine.size, theirs.size)}; }).filter(Boolean).sort((a, b) => b.score - a.score);
   return scored[0] && scored[0].score >= 0.6 && (!scored[1] || scored[0].score - scored[1].score >= 0.2) ? Object.assign({}, scored[0].m, {score:scored[0].score}) : null;
+}
+// F1 / F2 card text: the machines whose last upload was in that format, once known (else the default list)
+function fmtHint(k, dflt){
+  if(!isMachine(k)) return dflt;
+  const used = MACHINES().filter(m => { const last = [...S.D.attImports].filter(x => x.mkey === m.id).sort((a, b) => b.at.localeCompare(a.at))[0]; return last && last.fmt === k; }).map(m => m.name);
+  return used.length ? `${used.join(" · ")} — machine export (.xls), sheet “${k === "f1" ? "Attendance Details" : "Attend. Logs"}”` : dflt;
 }
 function machineSettings(ro){
   const ms = MACHINES(), offices = cfg().offices || [], missing = MACHINE_PRESET.filter(([n]) => !ms.some(m => m.name === n));
@@ -2415,7 +2421,8 @@ function uploadPanel(){
     const needOffice = isMachine(af) && !MACHINES().length, needMach = isMachine(af) && MACHINES().length, off = S.ui.attFmtOffice || "", mach = machineOf(S.ui.attMach);
     return `<section class="card"><div class="card-h"><span class="tile c5">${ic("upload")}</span><h2>Upload attendance</h2>${close}</div><div class="card-b stack">
       <div class="att-fmts" role="radiogroup" aria-label="File format">${Object.entries(ATT_FMT).map(([k, f]) => `<button type="button" class="att-fmt" role="radio" aria-checked="${af === k}" data-act="att-fmt" data-v="${k}">
-        <span class="tile ${af === k ? "c1" : "c5"}">${ic(f.icon)}</span><span><b>${esc(f.label)}</b><span class="small muted">${esc(f.hint)}</span></span></button>`).join("")}</div>
+        <span class="tile ${af === k ? "c1" : "c5"}">${ic(f.icon)}</span><span><b>${esc(f.label)}</b><span class="small muted">${esc(fmtHint(k, f.hint))}</span></span></button>`).join("")}</div>
+      ${MACHINES().length ? `<p class="small muted">F1 or F2 doesn't have to be right — the HRM checks the file and switches to the right one.</p>` : ""}
       ${needOffice ? `<label class="f" style="max-width:320px"><span>Which office's machine?</span><select id="att-fmt-office"><option value="">Choose office</option>${offices.map(o => `<option ${off === o ? "selected" : ""}>${esc(o)}</option>`).join("")}</select><small>Machine IDs are matched within this office only.</small></label>` : ""}
       ${ATT_TPL[af] ? `<div><button class="btn sm" type="button" data-act="att-tpl" data-v="${af}">${ic("download")}Download ${esc(ATT_FMT[af].label.split(" · ")[0])} template</button></div>` : ""}
       ${needMach ? `<label class="f" style="max-width:360px"><span>Which machine?</span><select id="att-mach"><option value="">Recognise automatically</option>${MACHINES().map(m => `<option value="${esc(m.id)}" ${S.ui.attMach === m.id ? "selected" : ""}>${esc(m.name)} · ${esc(m.office)}</option>`).join("")}</select><small>Machines are listed in Settings → Attendance. F1 or F2 is detected from the file.</small></label>` : ""}
