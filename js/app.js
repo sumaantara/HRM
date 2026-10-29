@@ -348,7 +348,7 @@ const dv = (k, n, d) => (S.drafts[k] && n in S.drafts[k]) ? S.drafts[k][n] : d;
    rd/<uid>, ph/<uid>   per-person read receipts and self-uploaded profile photo
    audit/<uid>/m/<yyyy-mm>  each person's own monthly audit trail
    requests, notifs, counters   shared working data (Contributors write) */
-const APP_VERSION = "4.9.2", SCHEMA = 2;
+const APP_VERSION = "4.10.0", SCHEMA = 2;
 const PRIVATE_FIELDS = ["phone","gender","birthDate","address","exitReason","contract","contracts","notes","quotaLog"];
 const SUB_COLS = ["employees","private","requests","candidates","tasks","reviews","reminders","notifs","announcements","attendance","attImports","backups","dec","links","rd","ph","sub","payslips","payruns","appraisals","kiosks","facestat"];
 const CORE_COLS = ["employees","requests","tasks","notifs","announcements","attendance"];
@@ -2723,8 +2723,15 @@ function mPhotos(){
    builds one PDF per employee in the company layout, protects it with the employee's date of birth (DDMMYYYY) and stores it
    privately. Each employee downloads their own payslips from My Payslips; nobody else (except payroll) can read them. */
 const isPayroll = () => { const m = realMe(); return S.mode !== "db" ? isHR() : !!(S.isOwner || m?.admin || m?.payroll || m?.role === "hrd"); };
-const PAY_DEFAULT = {company:"PT. SATU IMPIAN BERSAMA", signerName:"", signerTitle:"Accounting", prefix:"SK-PAYSLIP/OE",
-  income:["Basic Salary","Transport + Phone","Employee Incentive","Overtime","THR","Commission"], deduction:["BPJS Ketenagakerjaan","BPJS Kesehatan","PPh 21","Loan"]};
+const PAY_DEFAULT = {company:"PT. SATU IMPIAN BERSAMA", signerName:"", signerTitle:"Accounting", prefix:"SK-PAYSLIP/OE", place:"Denpasar",
+  income:["Basic Salary","Transport + Phone","Employee Incentive","Overtime","THR","Commission","BPJS TK All","BPJS Kesehatan All"],
+  deduction:["PPh 21","BPJS TK Staff","BPJS Kesehatan Staff","Loan","BPJS TK Company","BPJS Kesehatan Company"]};
+// salary sheet: the row above the headers can group columns — "Penambah" (income) and "Pengurang" (deductions); every column under
+// a group becomes a payslip line, so Finance can add or rename items in the sheet itself
+const PAY_INC = /^(penambah|penerimaan|pendapatan|income|earnings?)$/i, PAY_DED = /^(pengurang|potongan|deductions?)$/i;
+const PAY_FIXED = ["Employee ID","Name","Payslip No","Division/Department","Status"], PAY_BANK = ["Bank","Account No","Account Name"];
+// attendance recap printed on the payslip (from the HRM, same numbers as the Attendance report)
+const payAttPairs = row => row ? [["Hari kerja", row[1]], ["Hadir", row[2]], ["Terlambat", row[3]], ["Absen", row[4]], ["Cuti", row[5]], ["WFH", row[6]], ["Lembur (jam)", String(row[8] ?? 0).replace(".", ",")]].map(([k, v]) => [k, String(v ?? 0)]) : [];
 const paySet = () => Object.assign({}, PAY_DEFAULT, (S.R.payruns || []).find(x => x.id === "settings") || {});
 const ROMAN = ["I","II","III","IV","V","VI","VII","VIII","IX","X","XI","XII"];
 const periodLabel = p => { const [y, m] = String(p).split("-").map(Number); return m ? `${MONL[m-1]} ${y}` : p; };
@@ -2779,10 +2786,9 @@ function paySettingsBody(){
     <label class="btn sm" style="width:max-content"><input type="file" accept="image/png,image/jpeg" data-payimg="${k}" hidden>${ic("upload")}${c[k] ? "Replace" : "Upload"}</label><small>${hint}</small></div>`;
   return `<div class="card-b stack"><div class="note">${ic("info")}<div>These details appear on every payslip. Images are stored privately — only payroll staff and the payslip generator can read them. Use PNG with a transparent background for the stamp and signature.</div></div>
     <div class="fields">${t("company","Company name","Shown when no letterhead is uploaded and in the footer.")}${t("prefix","Payslip number format","Numbers look like 106/<b>SK-PAYSLIP/OE</b>/VII/2026 when the sheet leaves “Payslip No” empty.")}
-      ${t("signerName","Signed by (name)","e.g. the Accounting lead")}${t("signerTitle","Signer title","Printed above the signature, e.g. Accounting")}</div>
-    <div class="fields">${t("income","Income items","Comma-separated, in payslip order. The salary template uses these as columns.")}${t("deduction","Deduction items","Comma-separated.")}</div>
+      ${t("signerName","Signed by (name)","e.g. the Accounting lead")}${t("signerTitle","Signer title","Printed under the signature, e.g. Accounting")}${t("place","City printed by the date","e.g. Denpasar → “Denpasar, 28 September 2026”")}</div>
+    <div class="fields">${t("income","Income items (Penambah)","Comma-separated, in payslip order. The salary template uses these as columns. A sheet with its own Penambah / Pengurang columns is read as it is.")}${t("deduction","Deduction items (Pengurang)","Comma-separated.")}</div>
     <div class="fields">${t("otRate","Overtime rate per hour (Rp)","Pre-fills the Overtime column of the salary sheet: overtime hours × rate. Leave empty to fill it yourself.")}${t("otMin","Minimum overtime per day (minutes)","Days with less overtime than this don't count. Default 30.")}</div>
-    <div class="fields">${t("divisions","Divisions printed on the payslip","Comma-separated checkboxes, e.g. Pera ONE Villa, Education ONE, ONEderland Consulting, English Cafe, NeurONE Recruitment, ONEderland Enterprise. Leave empty to use the HRM divisions. The employee's division (or the sheet's Division column) is ticked.")}</div>
     <div class="fields">${pic("letterhead","Letterhead (full width)","Top banner with logo and company name, about 1300 × 260 px.")}${pic("stamp","Company stamp","Official stamp (cap perusahaan).")}${pic("signature","Authorised signature","Signature of the person named above.")}</div>
     <div class="row"><button class="btn" type="button" data-act="pay-preview-sample">${ic("doc")}Preview a payslip</button><span class="small muted">Uses the first employee and sample amounts — nothing is published.</span></div></div>`;
 }
@@ -2808,13 +2814,14 @@ function payRecap(e, ym){
 async function payTemplate(){
   const c = paySet(), ym = payMonth(), oti = c.income.findIndex(k => /overtime|lembur/i.test(k));
   try { const X = await loadXLSX(), wb = X.utils.book_new();
-    const head = ["Employee ID","Name","Payslip No","Division"].concat(c.income, c.deduction, ATT_RECAP.map(h => h + " (info)"));
+    const head = PAY_FIXED.concat(c.income, c.deduction, PAY_BANK, ATT_RECAP.map(h => h + " (info)"));
+    const groups = PAY_FIXED.map(() => "").concat(["Penambah"], c.income.slice(1).map(() => ""), ["Pengurang"], c.deduction.slice(1).map(() => ""), ["Transfer"], PAY_BANK.slice(1).map(() => ""), ["Attendance (info)"], ATT_RECAP.slice(1).map(() => ""));
     const list = activeE().filter(e => !e.system && e.joinDate <= `${ym}-31` && (!e.exitDate || e.exitDate >= `${ym}-01`)).sort((a,b) => a.name.localeCompare(b.name));
     let withAtt = 0;
     const rows = list.map(e => { const R = payRecap(e, ym); if(R.has) withAtt++;
-      return [e.empNo, e.name, "", ""].concat(c.income.map((_, i) => i === oti && R.otPay ? R.otPay : ""), c.deduction.map(() => ""), R.has ? R.row : [e.office || ""].concat(ATT_RECAP.slice(1).map(() => ""))); });
-    const ws = X.utils.aoa_to_sheet([["Salary month", ym, periodLabel(ym)], []].concat([head], rows)); ws["!cols"] = head.map(h => ({wch:Math.max(12, h.length + 3)})); X.utils.book_append_sheet(wb, ws, "Salaries");
-    const help = X.utils.aoa_to_sheet([["How to fill the salary sheet"],[""],["• One row per employee. Employee ID must match the HRM (it's pre-filled for all active employees)."],["• Amounts in rupiah without “Rp” or dots, e.g. 10500000 (decimals with a point: 2101595.15). Leave empty or 0 for none."],["• Payslip No is optional — leave it empty to number automatically (e.g. 106/" + c.prefix + "/VII/2026)."],["• Division is optional — leave it empty to use the division on the employee's profile."],["• Choose the month and pay date in the HRM when uploading. Uploading the same month again replaces those payslips (marked revised)."],["• Each payslip PDF is protected with the employee's date of birth (DDMMYYYY). Employees without a date of birth on their profile are skipped."],
+      return [e.empNo, e.name, "", "", (privOf(e.id).contract?.type) || e.status || ""].concat(c.income.map((_, i) => i === oti && R.otPay ? R.otPay : ""), c.deduction.map(() => ""), PAY_BANK.map(() => ""), R.has ? R.row : [e.office || ""].concat(ATT_RECAP.slice(1).map(() => ""))); });
+    const ws = X.utils.aoa_to_sheet([["Salary month", ym, periodLabel(ym)], groups].concat([head], rows)); ws["!cols"] = head.map(h => ({wch:Math.max(12, h.length + 3)})); X.utils.book_append_sheet(wb, ws, "Salaries");
+    const help = X.utils.aoa_to_sheet([["How to fill the salary sheet"],[""],["• One row per employee. Employee ID must match the HRM (it's pre-filled for all active employees)."],["• Amounts in rupiah without “Rp” or dots, e.g. 10500000 (decimals with a point: 2101595.15). Leave empty or 0 for none."],["• Payslip No is optional — leave it empty to number automatically (e.g. 106/" + c.prefix + "/VII/2026)."],["• Division/Department and Status are optional — leave them empty to use the employee's profile (Status = contract type, e.g. PKWT)."],["• Columns under “Penambah” are income and under “Pengurang” are deductions — add, remove or rename columns there and the payslip follows. Take home pay = total Penambah − total Pengurang."],["• Bank / Account No / Account Name are printed under “Ditransfer ke” on the payslip (optional)."],["• Choose the month and pay date in the HRM when uploading. Uploading the same month again replaces those payslips (marked revised)."],["• Each payslip PDF is protected with the employee's date of birth (DDMMYYYY). Employees without a date of birth on their profile are skipped."],
       ["• Columns marked (info) are the attendance recap for " + periodLabel(ym) + " from the HRM (same numbers as the Attendance report). They're for reference and are ignored when you upload."],
       ["• Overtime hours = time after the scheduled end (" + sched().end + ") on workdays plus all hours worked on days off, counting only days with at least " + (c.otMin === "" || c.otMin == null ? 30 : Number(c.otMin)) + " minutes."],
       [Number(c.otRate) ? "• The “" + (c.income[oti] || "Overtime") + "” column is pre-filled with overtime hours × Rp " + Number(c.otRate).toLocaleString("id-ID") + " per hour. Change it if needed." : "• Set an overtime rate in Payroll → Payslip layout to pre-fill the Overtime column automatically."],
@@ -2846,7 +2853,16 @@ function buildPay(P){
   const hi = rows.findIndex(r => r.some(x => /^employee\s*id$/i.test(String(x).trim())));
   if(hi < 0) return {items:[], problems:["The sheet needs an “Employee ID” column — use the salary template."], warn:[]};
   const H = rows[hi].map(x => String(x).replace(/\s+/g, " ").trim().toLowerCase()), col = n => H.indexOf(n.toLowerCase());
-  const ci = col("employee id"), cn = col("name"), cno = col("payslip no"), cdiv = col("division");
+  const ci = col("employee id"), cn = col("name"), cno = col("payslip no"), cdiv = [col("division/department"), col("division"), col("department")].find(i => i >= 0) ?? -1, cst = col("status");
+  const cbank = [col("bank"), col("bank name")].find(i => i >= 0) ?? -1, cacc = [col("account no"), col("no. rekening"), col("account number")].find(i => i >= 0) ?? -1, chold = [col("account name"), col("atas nama")].find(i => i >= 0) ?? -1;
+  // group row (Penambah / Pengurang) above the headers decides which columns are income and deductions
+  const G = hi > 0 ? rows[hi - 1].map(x => String(x).trim()) : [], gi = G.findIndex(x => PAY_INC.test(x)), gd = G.findIndex(x => PAY_DED.test(x));
+  let incCols = null, dedCols = null;
+  if(gi >= 0 && gd > gi){ const end = (from) => { for(let j = from + 1; j < Math.max(G.length, H.length); j++) if(G[j] && j !== from) return j; return H.length; };
+    const pick = (a, b) => H.map((h, j) => j).filter(j => j >= a && j < b && H[j] && !/\(info\)$/.test(H[j]));
+    incCols = pick(gi, end(gi)); dedCols = pick(gd, end(gd)); }
+  const colName = j => String(rows[hi][j]).replace(/\s+/g, " ").trim();
+  const incNames = incCols ? incCols.map(colName) : c.income, dedNames = dedCols ? dedCols.map(colName) : c.deduction;
   const items = [], problems = [], warn = [], seen = new Set();
   const existing = (S.R.payslips || []).filter(x => x.period === P.period);
   let seq = existing.reduce((m, x) => Math.max(m, parseInt(String(x.no)) || 0), 0);
@@ -2856,18 +2872,21 @@ function buildPay(P){
     const e = matchEmp(r[ci], cn >= 0 ? r[cn] : ""); const label = `${r[ci] || ""} ${cn >= 0 ? r[cn] : ""}`.trim();
     if(!e){ problems.push(`No employee matches “${label}”.`); continue; }
     if(seen.has(e.id)){ problems.push(`${e.name} appears twice.`); continue; } seen.add(e.id);
-    const inc = c.income.map(k => [k, amount(col(k) >= 0 ? r[col(k)] : 0)]), ded = c.deduction.map(k => [k, amount(col(k) >= 0 ? r[col(k)] : 0)]);
+    const inc = incCols ? incCols.map(j => [colName(j), amount(r[j])]) : c.income.map(k => [k, amount(col(k) >= 0 ? r[col(k)] : 0)]);
+    const ded = dedCols ? dedCols.map(j => [colName(j), amount(r[j])]) : c.deduction.map(k => [k, amount(col(k) >= 0 ? r[col(k)] : 0)]);
     const bad = inc.concat(ded).filter(([, v]) => isNaN(v) || v < 0);
     if(bad.length){ problems.push(`${e.name}: “${bad.map(b => b[0]).join(", ")}” isn't a valid amount.`); continue; }
     const gross = inc.reduce((s, [, v]) => s + v, 0), dd = ded.reduce((s, [, v]) => s + v, 0);
     if(!gross){ warn.push(`${e.name}: no income — skipped.`); continue; }
-    const R0 = payRecap(e, P.period), oti = c.income.findIndex(k => /overtime|lembur/i.test(k));
-    if(R0.ot && oti >= 0 && !inc[oti][1]) warn.push(`${e.name}: ${R0.ot} overtime hour(s) in attendance but “${c.income[oti]}” is empty.`);
+    const R0 = payRecap(e, P.period), oti = incNames.findIndex(k => /overtime|lembur/i.test(k));
+    if(R0.ot && oti >= 0 && !inc[oti][1]) warn.push(`${e.name}: ${R0.ot} overtime hour(s) in attendance but “${incNames[oti]}” is empty.`);
+    const bank = cbank >= 0 || cacc >= 0 ? {name:cbank >= 0 ? String(r[cbank]).trim() : "", account:cacc >= 0 ? String(r[cacc]).trim() : "", holder:chold >= 0 ? String(r[chold]).trim() : ""} : null;
     const prev = existing.find(x => x.empId === e.id);
     const no = (cno >= 0 && String(r[cno]).trim()) || prev?.no || `${++seq}/${c.prefix}/${ROMAN[m-1]}/${y}`;
-    items.push({empId:e.id, period:P.period, payDate:P.payDate || `${P.period}-28`, no, division:cdiv >= 0 ? String(r[cdiv]).trim() : "", income:inc, deduction:ded, gross, deductions:dd, takeHome:gross - dd, revised:!!prev, att:R0.has ? R0.row : null});
+    items.push({empId:e.id, period:P.period, payDate:P.payDate || `${P.period}-28`, no, division:cdiv >= 0 ? String(r[cdiv]).trim() : "", status:cst >= 0 ? String(r[cst]).trim() : "",
+      bank:bank && (bank.name || bank.account) ? bank : null, attendance:R0.has ? payAttPairs(R0.row) : [], income:inc, deduction:ded, gross, deductions:dd, takeHome:gross - dd, revised:!!prev, att:R0.has ? R0.row : null});
   }
-  for(const k of c.income.concat(c.deduction)) if(col(k) < 0) warn.push(`Column “${k}” not found — treated as 0.`);
+  if(!incCols) for(const k of c.income.concat(c.deduction)) if(col(k) < 0) warn.push(`Column “${k}” not found — treated as 0.`);
   return {items, problems, warn};
 }
 function payUploadPanel(){
@@ -4312,7 +4331,7 @@ document.addEventListener("click", async ev => {
     case "pay-preview": { if(!isPayroll()) return; const R = buildPay(S.ui.payParse || {}); if(R.items[0]) await payPreview(R.items[0]); return; }
     case "pay-preview-sample": { if(!isPayroll()) return; const c = paySet(), e = activeE().find(x => !x.system); if(!e){ toast("Add an employee first."); return; }
       const per = today().slice(0,7), [y, m] = per.split("-").map(Number);
-      await payPreview({empId:e.id, period:per, payDate:today(), no:`1/${c.prefix}/${ROMAN[m-1]}/${y}`, income:c.income.map((k, i) => [k, i === 0 ? 10000000 : i === 1 ? 500000 : 0]), deduction:c.deduction.map((k, i) => [k, i === 0 ? 200000 : i === 1 ? 100000 : 0])}); return; }
+      await payPreview({empId:e.id, period:per, payDate:today(), no:`1/${c.prefix}/${ROMAN[m-1]}/${y}`, attendance:payAttPairs(payRecap(e, per).row), bank:{name:"BCA", account:"0000000000", holder:e.name}, income:c.income.map((k, i) => [k, i === 0 ? 10000000 : i === 1 ? 500000 : 0]), deduction:c.deduction.map((k, i) => [k, i === 0 ? 200000 : i === 1 ? 100000 : 0])}); return; }
     case "pay-publish": if(isPayroll() && !S.ui.payProgress) await payPublish(); return;
     case "slip-dl": { const x = (S.R.payslips || []).find(y => y.id === id); if(x) await downloadSlip(x); return; }
     case "wipe-sample": if(!realAdmin()) return; if(!S.ui.wipe){ S.ui.wipe = true; render(); setTimeout(() => { if(S.ui.wipe){ S.ui.wipe = false; render(); } }, 5000); return; }

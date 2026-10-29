@@ -24,6 +24,7 @@ function imgInfo(u: Uint8Array): Img {
   return null;
 }
 const num = (v: unknown) => { const n = Number(v); return Number.isFinite(n) && n >= 0 && n < 1e12 ? Math.round(n * 100) / 100 : 0; };
+const str = (v: unknown, n: number) => String(v ?? "").replace(/[\r\n\t]+/g, " ").trim().slice(0, n);
 const pairs = (list: unknown) => (Array.isArray(list) ? list : []).slice(0, 20).map((p) => [String((p as unknown[])?.[0] ?? "").slice(0, 40), num((p as unknown[])?.[1])] as [string, number]).filter(([k]) => k);
 
 Deno.serve(async (req) => {
@@ -72,9 +73,12 @@ Deno.serve(async (req) => {
     const payDate = /^\d{4}-\d{2}-\d{2}$/.test(String(it.payDate || "")) ? String(it.payDate) : `${period}-28`;
     const dob = String(p.birthDate || ""), m = dob.match(/^(\d{4})-(\d{2})-(\d{2})$/);
     const data: SlipData = {
-      company: String(ps.company || "Company"), no: String(it.no || "").slice(0, 60) || `${period}/${e.empNo}`, payDate, period,
-      name: String(e.name || ""), empNo: String(e.empNo || ""), position: String(e.position || ""), division: String(it.division || e.division || ""), divisions,
+      company: String(ps.company || "Company"), no: String(it.no || "").slice(0, 60) || `${period}/${e.empNo}`, payDate, period, place: str(ps.place || "", 40),
+      name: String(e.name || ""), empNo: String(e.empNo || ""), position: String(e.position || ""), division: str(it.division || e.division || "", 60), divisions,
+      dept: str(e.dept || "", 60), office: str(e.office || "", 60), status: str(it.status || ((p as Record<string, unknown>).contract as Record<string, string> | undefined)?.type || e.status || "", 40),
       address: String(p.address || ""), phone: String(p.phone || ""), joinDate: String(e.joinDate || ""),
+      attendance: (Array.isArray(it.attendance) ? it.attendance : []).slice(0, 8).map((x) => [str((x as unknown[])?.[0], 22), str((x as unknown[])?.[1], 12)] as [string, string]).filter(([k]) => k),
+      bank: it.bank && typeof it.bank === "object" ? { name: str((it.bank as Record<string, unknown>).name, 40), account: str((it.bank as Record<string, unknown>).account, 40), holder: str((it.bank as Record<string, unknown>).holder, 60) } : undefined,
       income, deduction, signerName: String(ps.signerName || ""), signerTitle: String(ps.signerTitle || "Accounting"), letterhead, stamp, signature,
     };
     if (body.action === "preview") {
