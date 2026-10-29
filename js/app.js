@@ -348,7 +348,7 @@ const dv = (k, n, d) => (S.drafts[k] && n in S.drafts[k]) ? S.drafts[k][n] : d;
    rd/<uid>, ph/<uid>   per-person read receipts and self-uploaded profile photo
    audit/<uid>/m/<yyyy-mm>  each person's own monthly audit trail
    requests, notifs, counters   shared working data (Contributors write) */
-const APP_VERSION = "4.9.1", SCHEMA = 2;
+const APP_VERSION = "4.9.2", SCHEMA = 2;
 const PRIVATE_FIELDS = ["phone","gender","birthDate","address","exitReason","contract","contracts","notes","quotaLog"];
 const SUB_COLS = ["employees","private","requests","candidates","tasks","reviews","reminders","notifs","announcements","attendance","attImports","backups","dec","links","rd","ph","sub","payslips","payruns","appraisals","kiosks","facestat"];
 const CORE_COLS = ["employees","requests","tasks","notifs","announcements","attendance"];
@@ -2158,7 +2158,7 @@ const attLinks = P => Object.entries(P.assign || {}).filter(([k, v]) => v && v !
    other  any spreadsheet, columns matched by hand (one row per day or one row per scan). */
 const ATT_FMT = {
   f1: {label:"F1 · Fingerprint machine", hint:"Denpasar Office Lt 1 · Surabaya Office — machine export (.xls), sheet “Attendance Details”", icon:"fp"},
-  f2: {label:"F2 · Fingerprint machine", hint:"Denpasar Office Lt 3 · Jakarta Office · Gili Trawangan · Gili Air (Ratu Village & JBH, Gilitik) — machine export (.xls), sheet “Attend. Logs”", icon:"fp"},
+  f2: {label:"F2 · Fingerprint machine", hint:"Denpasar Office Lt 3 · Jakarta Office · Gili Trawangan (P1) · Gili Air (Ratu Village & JBH, Gilitik) — machine export (.xls), sheet “Attend. Logs”", icon:"fp"},
   daily: {label:"Daily sheet", hint:"Manual sheet — one row per person per day", icon:"cal"},
   wfh: {label:"WFH log", hint:"Work-from-home days with start, end and break", icon:"home"},
   other: {label:"Other export", hint:"Any spreadsheet — match the columns yourself", icon:"doc"},
@@ -2282,18 +2282,31 @@ function detectMachine(P){
 // F1 / F2 card text: the machines whose last upload was in that format, once known (else the default list)
 function fmtHint(k, dflt){
   if(!isMachine(k)) return dflt;
-  const used = MACHINES().filter(m => { const last = [...S.D.attImports].filter(x => x.mkey === m.id).sort((a, b) => b.at.localeCompare(a.at))[0]; return last && last.fmt === k; }).map(m => m.name);
-  return used.length ? `${used.join(" · ")} — machine export (.xls), sheet “${k === "f1" ? "Attendance Details" : "Attend. Logs"}”` : dflt;
+  const used = MACHINES().filter(m => machineFmt(m) === k).map(m => m.name);
+  return used.length ? `${used.join(" · ")} — machine export (.xls), sheet “${FMT_SHEET[k]}”` : dflt;
 }
 function machineSettings(ro){
-  const ms = MACHINES(), offices = cfg().offices || [], missing = MACHINE_PRESET.filter(([n]) => !ms.some(m => m.name === n));
+  const ms = MACHINES(), offices = cfg().offices || [], missing = MACHINE_PRESET.filter(([n]) => !ms.some(m => presetOf(m)?.[0] === n));
+  const fixable = ms.filter(m => { const pr = presetOf(m); return pr && (m.fmt !== pr[2] || (pr[3] && m.note !== pr[3]) || m.name !== pr[0]); });
+  const fmtBadge = f => f ? `<span class="tag" title="Sheet “${FMT_SHEET[f]}”">${f.toUpperCase()} · “${FMT_SHEET[f]}”</span>` : `<span class="tag" style="color:var(--warn)">format not set</span>`;
   return `<div class="card-b stack" style="border-top:1px solid var(--line)"><h3 class="sub" style="margin:0">Attendance machines</h3>
-    <p class="muted small">List every fingerprint machine and the office it stands in. When HR uploads an export they pick the machine, and scans from several machines on the same day are added together — someone who scans on Lt 1 and Lt 3, or visits another branch, gets one complete day. People are recognised by the <b>name on attendance machine</b> on their profile, on every machine in every office.</p>
-    ${ms.length ? `<div class="list" style="border:1px solid var(--line);border-radius:10px">${ms.map(m => { const n = S.D.attImports.filter(x => x.machine === m.name).length;
-      return `<div class="li"><span class="tile c5" style="width:34px;height:34px">${ic("fp")}</span><span class="grow"><b style="font-weight:600">${esc(m.name)}</b><span class="small muted" style="display:block">${esc(m.office || "—")}${n ? ` · ${n} upload${n === 1 ? "" : "s"}` : ""}</span></span>${ro ? "" : `<button class="ib plain" type="button" data-act="mach-del" data-id="${esc(m.id)}" aria-label="Remove ${esc(m.name)}">${ic("trash")}</button>`}</div>`; }).join("")}</div>` : `<div class="empty" style="border:1px dashed var(--line2);border-radius:10px">No machines listed yet.</div>`}
-    ${ro ? "" : `${missing.length === MACHINE_PRESET.length ? `<div><button class="btn sm" type="button" data-act="mach-preset">${ic("plus")}Add ONEderland's ${MACHINE_PRESET.length} machines</button> <span class="small muted">${MACHINE_PRESET.map(([n, o]) => `${n} (${o})`).join(" · ")}</span></div>` : ""}
+    <p class="muted small">Every fingerprint machine, the office it stands in and the kind of file it exports. When HR uploads an export they pick the machine (after the first upload it's recognised by itself), and scans from several machines on the same day are added together — someone who scans on Lt 1 and Lt 3, or visits another branch, gets one complete day. People are recognised by the <b>name on attendance machine</b> on their profile, on every machine in every office.</p>
+    <div class="note">${ic("info")}<div><b>F1 or F2?</b> Open the exported file and look at the sheet tabs at the bottom:<br>
+      <b>F1</b> — has a sheet <b>“Attendance Details”</b>: one row per scan (No., Device ID, ID, Name, Att.Type, Att.Time).<br>
+      <b>F2</b> — has a sheet <b>“Attend. Logs”</b>: one block per person, with each day's scan times in one cell.<br>
+      <span class="muted">No need to get it right when uploading — the HRM checks the file and switches to the right format.</span></div></div>
+    ${ms.length ? `<div class="list" style="border:1px solid var(--line);border-radius:10px">${ms.map(m => { const n = S.D.attImports.filter(x => x.mkey === m.id || x.machine === m.name).length, f = machineFmt(m);
+      return `<div class="li" style="align-items:flex-start"><span class="tile c5" style="width:34px;height:34px">${ic("fp")}</span><span class="grow"><b style="font-weight:600">${esc(m.name)}</b> ${fmtBadge(f)}
+        <span class="small muted" style="display:block">${esc(m.office || "—")}${m.note || presetOf(m)?.[3] ? ` · ${esc(m.note || presetOf(m)[3])}` : ""}${n ? ` · ${n} upload${n === 1 ? "" : "s"}` : " · not uploaded yet"}</span>
+        ${ro ? "" : `<span class="row" style="gap:8px;margin-top:6px"><select class="cb-mode" data-machf="${esc(m.id)}|fmt" aria-label="Format of ${esc(m.name)}"><option value="">Format…</option><option value="f1" ${m.fmt === "f1" ? "selected" : ""}>F1 · Attendance Details</option><option value="f2" ${m.fmt === "f2" ? "selected" : ""}>F2 · Attend. Logs</option></select>
+          <select class="cb-mode" data-machf="${esc(m.id)}|office" aria-label="Office of ${esc(m.name)}">${offices.map(o => `<option ${m.office === o ? "selected" : ""}>${esc(o)}</option>`).join("")}</select></span>`}</span>
+        ${ro ? "" : `<button class="ib plain" type="button" data-act="mach-del" data-id="${esc(m.id)}" aria-label="Remove ${esc(m.name)}">${ic("trash")}</button>`}</div>`; }).join("")}</div>` : `<div class="empty" style="border:1px dashed var(--line2);border-radius:10px">No machines listed yet.</div>`}
+    ${ro ? "" : `${missing.length ? `<div><button class="btn sm" type="button" data-act="mach-preset">${ic("plus")}Add ONEderland's ${missing.length === MACHINE_PRESET.length ? MACHINE_PRESET.length + " machines" : `missing machine${missing.length === 1 ? "" : "s"} (${missing.map(x => x[0]).join(", ")})`}</button></div>` : ""}
+    ${fixable.length ? `<div class="note warn">${ic("alert")}<div>${fixable.length} machine${fixable.length === 1 ? "" : "s"} can be completed from ONEderland's list (format${fixable.some(m => m.name !== presetOf(m)[0]) ? ", name" : ""} and description). <button class="btn sm" type="button" data-act="mach-fill">${ic("check")}Complete the details</button></div></div>` : ""}
     <form class="row" data-draft="mach" data-submit="mach" style="align-items:flex-end"><label class="f" style="flex:1 1 220px"><span>Machine name</span><input type="text" name="name" value="${esc(dv("mach","name",""))}" placeholder="e.g. Denpasar Office Lt 1"></label>
-      <label class="f" style="flex:0 1 220px"><span>Office</span><select name="office"><option value="">Choose office</option>${offices.map(o => `<option ${dv("mach","office","") === o ? "selected" : ""}>${esc(o)}</option>`).join("")}</select></label>
+      <label class="f" style="flex:0 1 200px"><span>Office</span><select name="office"><option value="">Choose office</option>${offices.map(o => `<option ${dv("mach","office","") === o ? "selected" : ""}>${esc(o)}</option>`).join("")}</select></label>
+      <label class="f" style="flex:0 1 200px"><span>Format</span><select name="fmt"><option value="">Not sure</option><option value="f1" ${dv("mach","fmt","") === "f1" ? "selected" : ""}>F1 · Attendance Details</option><option value="f2" ${dv("mach","fmt","") === "f2" ? "selected" : ""}>F2 · Attend. Logs</option></select></label>
+      <label class="f" style="flex:1 1 220px"><span>Description <span class="muted" style="font-weight:400">(optional)</span></span><input type="text" name="note" value="${esc(dv("mach","note",""))}" placeholder="e.g. 3rd floor, next to the lift"></label>
       <button class="btn" type="submit">${ic("plus")}Add machine</button></form>`}</div>`;
 }
 function attOfficePool(office){ return E().filter(e => !e.system && (!office || e.office === office)); }
@@ -2301,7 +2314,14 @@ function attOfficePool(office){ return E().filter(e => !e.system && (!office || 
 // (e.g. Denpasar Lt 1 and Lt 3), so scans from several machines on the same day are added together instead of replacing each other.
 const MACHINES = () => (cfg().machines || []).filter(m => m && m.id && m.name);
 const machineOf = id => MACHINES().find(m => m.id === id);
-const MACHINE_PRESET = [["Denpasar Office Lt 1","Bali"],["Denpasar Office Lt 3","Bali"],["Jakarta Office","Jakarta"],["Surabaya Office","Surabaya"],["Gili Trawangan","Gili Trawangan"],["Gili Air · Ratu Village & JBH","Gili Air (Ratu Village & JBH)"],["Gili Air · Gilitik","Gili Air (Gilitik)"]];
+// ONEderland's machines: [name, office, format, note]
+const MACHINE_PRESET = [["Denpasar Office Lt 1","Bali","f1","Denpasar office, 1st floor"],["Denpasar Office Lt 3","Bali","f2","Denpasar office, 3rd floor"],["Jakarta Office","Jakarta","f2",""],["Surabaya Office","Surabaya","f1",""],
+  ["Gili Trawangan (P1)","Gili Trawangan","f2","Gili Trawangan, P1"],["Gili Air · Ratu Village & JBH","Gili Air (Ratu Village & JBH)","f2","Ratu Village and JBH villas — one machine for both, same location"],["Gili Air · Gilitik","Gili Air (Gilitik)","f2","Gilitik restaurant — separate location on Gili Air"]];
+const presetOf = m => MACHINE_PRESET.find(([n]) => n === m.name || (n === "Gili Trawangan (P1)" && m.name === "Gili Trawangan"));
+// a machine's export format: set on the machine › its last upload › ONEderland's list
+function machineFmt(m){ if(!m) return ""; if(isMachine(m.fmt)) return m.fmt; const last = [...S.D.attImports].filter(x => x.mkey === m.id && isMachine(x.fmt)).sort((a, b) => b.at.localeCompare(a.at))[0]; return last?.fmt || presetOf(m)?.[2] || ""; }
+const FMT_SHEET = {f1:"Attendance Details", f2:"Attend. Logs"};
+const machLabel = m => `${m.name} · ${m.office}${machineFmt(m) ? ` · ${machineFmt(m).toUpperCase()}` : ""}`;
 const mkeyOffice = k => k.startsWith("office:") ? k.slice(7) : machineOf(k)?.office || "";
 const mkeyName = k => k.startsWith("office:") ? `${k.slice(7)} machine` : machineOf(k)?.name || "machine";
 function buildStructured(P){
@@ -2425,7 +2445,7 @@ function uploadPanel(){
       ${MACHINES().length ? `<p class="small muted">F1 or F2 doesn't have to be right — the HRM checks the file and switches to the right one.</p>` : ""}
       ${needOffice ? `<label class="f" style="max-width:320px"><span>Which office's machine?</span><select id="att-fmt-office"><option value="">Choose office</option>${offices.map(o => `<option ${off === o ? "selected" : ""}>${esc(o)}</option>`).join("")}</select><small>Machine IDs are matched within this office only.</small></label>` : ""}
       ${ATT_TPL[af] ? `<div><button class="btn sm" type="button" data-act="att-tpl" data-v="${af}">${ic("download")}Download ${esc(ATT_FMT[af].label.split(" · ")[0])} template</button></div>` : ""}
-      ${needMach ? `<label class="f" style="max-width:360px"><span>Which machine?</span><select id="att-mach"><option value="">Recognise automatically</option>${MACHINES().map(m => `<option value="${esc(m.id)}" ${S.ui.attMach === m.id ? "selected" : ""}>${esc(m.name)} · ${esc(m.office)}</option>`).join("")}</select><small>Machines are listed in Settings → Attendance. F1 or F2 is detected from the file.</small></label>` : ""}
+      ${needMach ? `<label class="f" style="max-width:360px"><span>Which machine?</span><select id="att-mach"><option value="">Recognise automatically</option>${MACHINES().map(m => `<option value="${esc(m.id)}" ${S.ui.attMach === m.id ? "selected" : ""}>${esc(machLabel(m))}</option>`).join("")}</select><small>Machines are listed in Settings → Attendance. F1 or F2 is detected from the file.</small></label>` : ""}
       ${needOffice ? `<p class="small muted">Tip: list your machines in Settings → Attendance so two machines in one office (e.g. two floors) are kept apart.</p>` : ""}
       ${needMach && !mach ? `<p class="small muted">Not sure? Just select the file — the HRM recognises a machine from the people on it once it has been uploaded before.</p>` : ""}
       ${needOffice && !off ? `<div class="note">${ic("info")}<div>Choose the office first, then select the file.</div></div>`
@@ -2441,7 +2461,7 @@ function uploadPanel(){
   return `<section class="card"><div class="card-h"><span class="tile c5">${ic(ATT_FMT[P.fmt].icon)}</span><h2>${esc(P.file)}<br><span class="small muted" style="font-family:var(--f-body);font-weight:500">${esc(ATT_FMT[P.fmt].label)}${P.machine ? " · " + esc(P.machine) : ""}${P.office ? " · " + esc(P.office) : ""} · ${res.total} rows</span></h2>${close}</div>
     <div class="card-b stack">
       ${P.sheets.length > 1 ? `<label class="f" style="max-width:260px"><span>Sheet</span><select id="att-sheet">${P.sheets.map(([n],i) => `<option value="${i}" ${P.sheet===i?"selected":""}>${esc(n)}</option>`).join("")}</select></label>` : ""}
-      ${isMachine(P.fmt) && MACHINES().length ? `<div class="row" style="align-items:flex-end;gap:12px"><label class="f" style="max-width:360px;flex:1"><span>Machine</span><select id="att-pmach"><option value="">Choose the machine this file is from</option>${MACHINES().map(m => `<option value="${esc(m.id)}" ${P.mkey === m.id ? "selected" : ""}>${esc(m.name)} · ${esc(m.office)}</option>`).join("")}</select></label>
+      ${isMachine(P.fmt) && MACHINES().length ? `<div class="row" style="align-items:flex-end;gap:12px"><label class="f" style="max-width:360px;flex:1"><span>Machine</span><select id="att-pmach"><option value="">Choose the machine this file is from</option>${MACHINES().map(m => `<option value="${esc(m.id)}" ${P.mkey === m.id ? "selected" : ""}>${esc(machLabel(m))}</option>`).join("")}</select></label>
         ${P.detected && P.machine ? `<span class="pill p-approved" style="margin-bottom:10px">${ic("check")}Recognised · ${P.detected}% of the people match its last upload</span>` : !P.mkey ? `<span class="small" style="color:var(--warn);margin-bottom:10px">Pick the machine — it hasn't been uploaded before, so it can't be recognised yet.</span>` : ""}</div>` : ""}
       ${res.headerMissing ? `<ul class="errs"><li>${P.fmt === "f1" ? "This sheet has no “ID / Name / Att.Time” columns. Pick the sheet “Attendance Details”." : P.fmt === "f2" ? "This sheet has no “ID : … Name : …” blocks. Pick the sheet “Attend. Logs”." : "The columns weren't recognised. Use the template's column names (Employee ID, Name, Date, Check In / Start, Check Out / End)."}</li></ul>` : ""}
       ${isMachine(P.fmt) && res.machine.length ? `<div><h3 class="sub">People on the machine</h3><p class="small muted">Machine users are linked by the <b>name on the attendance machine</b> set on each profile — people from other offices who visited ${esc(P.machine || P.office)} are recognised too (machine IDs aren't used — every machine starts at 1). Pick the employee for anyone not linked; the HRM remembers it so it's automatic next time.</p>
@@ -4206,7 +4226,8 @@ document.addEventListener("click", async ev => {
     case "flow-mv": if(!isAdmin()) return; { const f = clone(cfg().flows[b.dataset.k]), i = Number(b.dataset.i), j = i + Number(v); [f[i], f[j]] = [f[j], f[i]]; await setCfg("flows."+b.dataset.k, f); return; }
     case "flow-rm": if(!isAdmin()) return; { const f = clone(cfg().flows[b.dataset.k]); f.splice(Number(b.dataset.i), 1); await setCfg("flows."+b.dataset.k, f); return; }
     case "mach-del": return setCfg("machines", MACHINES().filter(m => m.id !== id));
-    case "mach-preset": { const add = MACHINE_PRESET.filter(([n]) => !MACHINES().some(m => m.name === n)).map(([name, office]) => ({id:uid("m"), name, office}));
+    case "mach-fill": return setCfg("machines", MACHINES().map(m => { const pr = presetOf(m); return pr ? Object.assign({}, m, {name:pr[0], fmt:pr[2]}, pr[3] ? {note:pr[3]} : {}) : m; }));
+    case "mach-preset": { const add = MACHINE_PRESET.filter(([n]) => !MACHINES().some(m => presetOf(m)?.[0] === n)).map(([name, office, fmt, note]) => Object.assign({id:uid("m"), name, office, fmt}, note ? {note} : {}));
       let offs = cfg().offices || []; const missO = [...new Set(add.map(m => m.office))].filter(o => !offs.includes(o));
       if(offs.includes("Gili Air") && missO.some(o => o.startsWith("Gili Air (")) && !S.D.employees.some(e => e.office === "Gili Air")) offs = offs.filter(o => o !== "Gili Air");
       if(missO.length || offs.length !== (cfg().offices || []).length) await setCfg("offices", offs.concat(missO));
@@ -4360,7 +4381,7 @@ document.addEventListener("change", async ev => {
   if(t.dataset.rsel){ S.ui.restore.sel[t.dataset.rsel] = t.checked; render(); return; }
   if(t.id === "att-sheet"){ S.ui.attParse.sheet = Number(t.value); if(S.ui.attParse.fmt === "other") autoMap(); render(); return; }
   if(t.id === "att-fmt-office"){ S.ui.attFmtOffice = t.value; render(); return; }
-  if(t.id === "att-mach"){ S.ui.attMach = t.value; render(); return; }
+  if(t.id === "att-mach"){ S.ui.attMach = t.value; const f = machineFmt(machineOf(t.value)); if(f) S.ui.attFmt = f; render(); return; }
   if(t.id === "att-pmach" && S.ui.attParse){ const P = S.ui.attParse, m = machineOf(t.value); P.mkey = m ? m.id : ""; P.machine = m ? m.name : ""; P.office = m ? m.office : ""; P.detected = 0; P.assign = {}; render(); return; }
   if(t.dataset.attassign !== undefined){ S.ui.attParse.assign[t.dataset.attassign] = t.value; render(); return; }
   if(t.id === "att-dmy"){ S.ui.attParse.dmy = t.value === "1"; render(); return; }
@@ -4379,6 +4400,7 @@ document.addEventListener("change", async ev => {
     return updateJobs(list, e => { if(e.jobLevel !== name || e.role === "hrd") return null; const r = roleFor(name, false); return r !== e.role ? Object.assign(clone(e), {role:r}) : null; }, `Access for ${name} updated.`); }
   if(t.dataset.wd){ const w = Number(t.dataset.wd), cur = sched().workdays || []; await setCfg("schedule.workdays", t.checked ? [...new Set(cur.concat([w]))].sort() : cur.filter(x => x !== w)); return; }
   if(t.classList.contains("flow-add") && t.value){ await setCfg("flows."+t.dataset.k, (cfg().flows[t.dataset.k]||[]).concat([t.value])); return; }
+  if(t.dataset.machf){ const [id, f] = t.dataset.machf.split("|"); if(!["fmt","office"].includes(f)) return; return setCfg("machines", MACHINES().map(m => m.id === id ? Object.assign({}, m, {[f]:t.value}) : m)); }
   if(t.dataset.holmode !== undefined){ const hs = clone(cfg().holidays || []), h = hs[Number(t.dataset.holmode)]; if(h && CB_MODES[t.value]){ h.mode = t.value; await setCfg("holidays", hs); } return; }
   if(t.dataset.cfg){ const val = t.type === "checkbox" ? t.checked : t.type === "number" ? Number(t.value||0) : t.value; await setCfg(t.dataset.cfg, val); if(/^hrd(Approver|Backup)$/.test(t.dataset.cfg) && canCfg(t.dataset.cfg)) await reassignHrdSteps(); return; }
   const f = syncDraft(t); if(!f) return;
@@ -4451,7 +4473,8 @@ document.addEventListener("submit", async ev => {
     return setCfg("holidays", (cfg().holidays||[]).filter(h => !(h.date === date && hCountry(h) === country && JSON.stringify(h.offices||[]) === JSON.stringify(offices))).concat([Object.assign({date, name, offices, country}, mode ? {kind:"cuti", mode} : {})])); }
   if(s === "mach"){ const name = (dv("mach","name","") || "").trim(), office = dv("mach","office","") || ""; if(!name || !office){ toast("Enter the machine name and choose its office."); return; }
     if(MACHINES().some(m => m.name.toLowerCase() === name.toLowerCase())){ toast("A machine with that name is already listed."); return; }
-    delete S.drafts.mach; return setCfg("machines", MACHINES().concat([{id:uid("m"), name, office}])); }
+    const fmt = isMachine(dv("mach","fmt","")) ? dv("mach","fmt","") : "", note = (dv("mach","note","") || "").trim().slice(0, 120);
+    delete S.drafts.mach; return setCfg("machines", MACHINES().concat([Object.assign({id:uid("m"), name, office}, fmt ? {fmt} : {}, note ? {note} : {})])); }
   if(s === "crit"){ const n = (dv("crit","name","")||"").trim(); if(!n) return; delete S.drafts.crit; return setCfg("criteria", (cfg().criteria||[]).concat([n])); }
 });
 document.addEventListener("dragover", ev => { const d = ev.target.closest?.("#att-drop,#emp-drop,#restore-drop,#pay-drop"); if(d){ ev.preventDefault(); d.classList.add("over"); } });
