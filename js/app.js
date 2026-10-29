@@ -67,7 +67,7 @@ const DEFAULT_CONFIG = {
   holidays:[{date:"2026-12-25",name:"Christmas Day"},{date:"2027-01-01",name:"New Year's Day"}],
   email:{onTask:true, onRequest:false},
   criteria:["Quality of work","Productivity","Teamwork","Communication","Initiative & ownership"],
-  offices:["Bali","Jakarta","Surabaya","Gili Trawangan","Gili Air"],
+  offices:["Bali","Jakarta","Surabaya","Gili Trawangan","Gili Air (Ratu Village & JBH)","Gili Air (Gilitik)"],
   divisions:["ONEderland Consulting","Education ONE","Carbon Energy","PeraONE Xperience","English Cafe","Strategy and Growth"],
   departments:["Management","Human Resources","Strategy & Growth","Operations","Finance"],
   schedule:{start:"08:30", end:"17:30", grace:10, workdays:[1,2,3,4,5]},
@@ -348,7 +348,7 @@ const dv = (k, n, d) => (S.drafts[k] && n in S.drafts[k]) ? S.drafts[k][n] : d;
    rd/<uid>, ph/<uid>   per-person read receipts and self-uploaded profile photo
    audit/<uid>/m/<yyyy-mm>  each person's own monthly audit trail
    requests, notifs, counters   shared working data (Contributors write) */
-const APP_VERSION = "4.8.0", SCHEMA = 2;
+const APP_VERSION = "4.8.1", SCHEMA = 2;
 const PRIVATE_FIELDS = ["phone","gender","birthDate","address","exitReason","contract","contracts","notes","quotaLog"];
 const SUB_COLS = ["employees","private","requests","candidates","tasks","reviews","reminders","notifs","announcements","attendance","attImports","backups","dec","links","rd","ph","sub","payslips","payruns","appraisals","kiosks","facestat"];
 const CORE_COLS = ["employees","requests","tasks","notifs","announcements","attendance"];
@@ -680,7 +680,7 @@ function sample(){
   });
   const ORGS = {e01:["Bali","ONEderland Consulting"],e02:["Bali","ONEderland Consulting"],e03:["Jakarta","ONEderland Consulting"],e04:["Bali","Strategy and Growth"],e05:["Jakarta","Strategy and Growth"],
     e06:["Bali","Strategy and Growth"],e07:["Gili Trawangan","PeraONE Xperience"],e08:["Gili Trawangan","PeraONE Xperience"],e09:["Surabaya","ONEderland Consulting"],e10:["Surabaya","Carbon Energy"],
-    e11:["Gili Air","PeraONE Xperience"],e12:["Gili Air","English Cafe"],e13:["Surabaya","Carbon Energy"],e14:["Jakarta","Education ONE"],e15:["Jakarta","Education ONE"]};
+    e11:["Gili Air (Ratu Village & JBH)","PeraONE Xperience"],e12:["Gili Air (Gilitik)","English Cafe"],e13:["Surabaya","Carbon Energy"],e14:["Jakarta","Education ONE"],e15:["Jakarta","Education ONE"]};
   employees.forEach(e => { [e.office, e.division] = ORGS[e.id] || ["",""]; });
   employees.unshift({id:"e00", empNo:"SYS-0001", name:"Admin", system:true, admin:true, role:"employee", jobLevel:"", gender:"", position:"System Administrator", dept:"", division:"", office:"",
     supervisorId:null, joinDate:"2026-01-01", status:"Active", email:"admin@example.com", phone:"", contract:null, contracts:[], notes:[], quotaLog:[], birthDate:""});
@@ -2284,7 +2284,7 @@ function attOfficePool(office){ return E().filter(e => !e.system && (!office || 
 // (e.g. Denpasar Lt 1 and Lt 3), so scans from several machines on the same day are added together instead of replacing each other.
 const MACHINES = () => (cfg().machines || []).filter(m => m && m.id && m.name);
 const machineOf = id => MACHINES().find(m => m.id === id);
-const MACHINE_PRESET = [["Denpasar Office Lt 1","Bali"],["Denpasar Office Lt 3","Bali"],["Jakarta Office","Jakarta"],["Surabaya Office","Surabaya"],["Gili Trawangan","Gili Trawangan"],["Gili Air · Ratu Village & JBH","Gili Air"],["Gili Air · Gilitik","Gili Air"]];
+const MACHINE_PRESET = [["Denpasar Office Lt 1","Bali"],["Denpasar Office Lt 3","Bali"],["Jakarta Office","Jakarta"],["Surabaya Office","Surabaya"],["Gili Trawangan","Gili Trawangan"],["Gili Air · Ratu Village & JBH","Gili Air (Ratu Village & JBH)"],["Gili Air · Gilitik","Gili Air (Gilitik)"]];
 const mkeyOffice = k => k.startsWith("office:") ? k.slice(7) : machineOf(k)?.office || "";
 const mkeyName = k => k.startsWith("office:") ? `${k.slice(7)} machine` : machineOf(k)?.name || "machine";
 function buildStructured(P){
@@ -4172,8 +4172,9 @@ document.addEventListener("click", async ev => {
     case "flow-rm": if(!isAdmin()) return; { const f = clone(cfg().flows[b.dataset.k]); f.splice(Number(b.dataset.i), 1); await setCfg("flows."+b.dataset.k, f); return; }
     case "mach-del": return setCfg("machines", MACHINES().filter(m => m.id !== id));
     case "mach-preset": { const add = MACHINE_PRESET.filter(([n]) => !MACHINES().some(m => m.name === n)).map(([name, office]) => ({id:uid("m"), name, office}));
-      const offs = cfg().offices || [], missO = [...new Set(add.map(m => m.office))].filter(o => !offs.includes(o));
-      if(missO.length) await setCfg("offices", offs.concat(missO));
+      let offs = cfg().offices || []; const missO = [...new Set(add.map(m => m.office))].filter(o => !offs.includes(o));
+      if(offs.includes("Gili Air") && missO.some(o => o.startsWith("Gili Air (")) && !S.D.employees.some(e => e.office === "Gili Air")) offs = offs.filter(o => o !== "Gili Air");
+      if(missO.length || offs.length !== (cfg().offices || []).length) await setCfg("offices", offs.concat(missO));
       return setCfg("machines", MACHINES().concat(add)); }
     case "holtab": S.ui.holTab = v; render(); return;
     case "hol-preset": { const cur = cfg().holidays || [], add = (HOL_PRESET[v] || []).filter(([d]) => !cur.some(h => h.date === d && hCountry(h) === v)).map(([date, name, kind]) => Object.assign({date, name, offices:[], country:v}, kind ? {kind, mode:"deduct"} : {}));
