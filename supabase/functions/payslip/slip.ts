@@ -18,7 +18,8 @@ export type SlipData = {
 const W = 595.28, H = 841.89, M = 40;
 type RGB = [number, number, number];
 const ink: RGB = [21, 26, 45], ink2: RGB = [58, 65, 87], muted: RGB = [110, 116, 137], line: RGB = [221, 225, 236], soft: RGB = [245, 246, 250];
-const navy: RGB = [27, 42, 84], accent: RGB = [53, 84, 245], green: RGB = [20, 128, 74], greenSoft: RGB = [227, 245, 234];
+const navy: RGB = [27, 42, 84], green: RGB = [20, 128, 74], greenSoft: RGB = [227, 245, 234];
+let accent: RGB = [53, 84, 245];
 const MONTHS = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"];
 
 // Indonesian money: 20.000.000 / 2.101.595,15
@@ -42,8 +43,8 @@ export function terbilang(n: number): string {
     if (x < 1e9) return t(x / 1e6) + " juta" + (x % 1e6 ? " " + t(x % 1e6) : ""); if (x < 1e12) return t(x / 1e9) + " miliar" + (x % 1e9 ? " " + t(x % 1e9) : "");
     return t(x / 1e12) + " triliun" + (x % 1e12 ? " " + t(x % 1e12) : "");
   };
-  const v = Math.max(0, Math.round(n || 0)); const s = v ? t(v) : "nol";
-  return (s.charAt(0).toUpperCase() + s.slice(1) + " rupiah").replace(/\s+/g, " ");
+  const c = Math.max(0, Math.round((n || 0) * 100)), v = Math.floor(c / 100), sen = c % 100, s = v ? t(v) : "nol";
+  return (s.charAt(0).toUpperCase() + s.slice(1) + " rupiah" + (sen ? " " + t(sen) + " sen" : "")).replace(/\s+/g, " ");
 }
 
 export function buildSlip(d: SlipData): Uint8Array {
@@ -66,13 +67,21 @@ export function buildSlip(d: SlipData): Uint8Array {
   const hline = (x1: number, x2: number, y: number, c: RGB = line, w = 0.6) => { doc.setDrawColor(...c); doc.setLineWidth(w); doc.line(x1, y, x2, y); };
 
   // ── header ───────────────────────────────────────────────────────────────
-  rect(0, 0, W, 5, navy); rect(W * 0.62, 0, W * 0.38, 5, accent);
+  // the company's own letterhead, full width at the top exactly like the paper payslip; otherwise a plain header
+  const orig = !!d.letterhead; accent = orig ? [214, 124, 18] : [53, 84, 245];
   let y = 30;
-  if (d.letterhead) { y = 16 + img(d.letterhead, M, 16, W - 2 * M - 150, 64) + 4; }
-  else { txt(d.company, M, 48, { size: 15, bold: true, color: navy, maxW: W - 2 * M - 170 }); txt("Human Resources · Payroll", M, 62, { size: 8, color: muted }); y = 70; }
-  txt("SLIP GAJI", W - M, 46, { size: 18, bold: true, color: navy, align: "right" });
-  txt(`PAYSLIP · ${periodLong(d.period).toUpperCase()}`, W - M, 60, { size: 8, bold: true, color: accent, align: "right" });
-  y = Math.max(y, 72);
+  if (orig) {
+    const h = img(d.letterhead, 0, 0, W, 190); y = h + 4;
+    txt("SLIP GAJI", M, y + 12, { size: 16, bold: true, color: navy });
+    txt(`PAYSLIP · ${periodLong(d.period).toUpperCase()}`, W - M, y + 12, { size: 8.5, bold: true, color: accent, align: "right" });
+    y += 14;
+  } else {
+    rect(0, 0, W, 5, navy); rect(W * 0.62, 0, W * 0.38, 5, accent);
+    txt(d.company, M, 48, { size: 15, bold: true, color: navy, maxW: W - 2 * M - 170 }); txt("Human Resources · Payroll", M, 62, { size: 8, color: muted });
+    txt("SLIP GAJI", W - M, 46, { size: 18, bold: true, color: navy, align: "right" });
+    txt(`PAYSLIP · ${periodLong(d.period).toUpperCase()}`, W - M, 60, { size: 8, bold: true, color: accent, align: "right" });
+    y = 72;
+  }
   hline(M, W - M, y + 6, navy, 1.2);
 
   // reference band: payslip no · period · pay date · confidential
@@ -140,6 +149,7 @@ export function buildSlip(d: SlipData): Uint8Array {
 
   // ── preview watermark & footer ──────────────────────────────────────────
   if (d.preview) { doc.saveGraphicsState(); doc.setGState(new (doc as unknown as { GState: new (o: unknown) => unknown }).GState({ opacity: 0.08 }) as never); txt("PREVIEW", W / 2, H / 2 + 40, { size: 110, bold: true, color: [178, 98, 5], align: "center" }); doc.restoreGraphicsState(); }
+  if (orig) return new Uint8Array(doc.output("arraybuffer"));   // the letterhead version ends like the paper payslip: no extra footer
   hline(M, W - M, H - 52);
   txt("Dokumen ini bersifat RAHASIA dan hanya untuk karyawan yang bersangkutan. Slip gaji diterbitkan secara elektronik dan sah tanpa tanda tangan basah.", W / 2, H - 38, { size: 6.8, color: muted, align: "center" });
   txt(`${d.company} · ${d.no} · ${periodLong(d.period)}${d.password ? " · dilindungi kata sandi (tanggal lahir DDMMYYYY)" : ""} · ONEderland HRM`, W / 2, H - 27, { size: 6.5, color: muted, align: "center" });
