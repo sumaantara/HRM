@@ -8,11 +8,10 @@
   const $ = (id) => document.getElementById(id);
   const LS = { get(k) { try { return JSON.parse(localStorage.getItem(k) || "null"); } catch (e) { return null; } }, set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* private mode */ } } };
   const q = new URLSearchParams(location.search), local = /^(localhost|127\.0\.0\.1)$/.test(location.hostname);
-  const TEST_NOLIVE = local && q.get("nolive") === "1";
   const FN = (CFG.functionsUrl || (CFG.supabaseUrl + "/functions/v1")) + "/kiosk";
   let token = LS.get("hrm.kiosk.token"), kiosk = LS.get("hrm.kiosk.info"), offset = 0, threshold = 0.5;
   // what the tablet is doing, sent with "hello" so HR / support can see why a tablet doesn't record (no photos, no personal data)
-  const D = { v: "2", ua: navigator.userAgent.slice(0, 160), stage: "start", backend: "", modelsMs: 0, cam: "", detMs: 0, frames: 0, faces: 0, closed: 0, blinks: 0, sent: 0, err: "" };
+  const D = { v: "3", ua: navigator.userAgent.slice(0, 160), stage: "start", backend: "", modelsMs: 0, cam: "", detMs: 0, frames: 0, faces: 0, sent: 0, err: "" };
   const diagErr = (e) => { D.err = String((e && (e.name ? e.name + ": " : "") + (e.message || e)) || "").slice(0, 160); };
 
   /* ---------- server ---------- */
@@ -41,20 +40,9 @@
   let toastT = null; const toast = (m) => { const t = $("toast"); t.textContent = m; t.classList.add("on"); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove("on"), 3000); };
   const prompt = (id, en, cls) => { $("prompt").innerHTML = `<b>${id}</b><span>${en || ""}</span>`; $("ring").className = "ring " + (cls || ""); D.stage = String(en || id).slice(0, 60); diagLine(); };
   // tap the clock 5 times to see the diagnostics line
-  let taps = 0, tapT = 0; const diagLine = () => { const el = $("diag"); if (el && el.classList.contains("on")) el.textContent = `${D.backend || "?"} · det ${D.detMs} ms · frames ${D.frames} · faces ${D.faces} · closed ${D.closed} · blinks ${D.blinks} · sent ${D.sent} · ${D.cam}${D.err ? " · " + D.err : ""}`; };
+  let taps = 0, tapT = 0; const diagLine = () => { const el = $("diag"); if (el && el.classList.contains("on")) el.textContent = `${D.backend || "?"} · det ${D.detMs} ms · frames ${D.frames} · faces ${D.faces} · sent ${D.sent} · ${D.cam}${D.err ? " · " + D.err : ""}`; };
   document.addEventListener("click", (ev) => { if (!ev.target.closest || !ev.target.closest(".clock")) return; const n = Date.now(); taps = n - tapT < 800 ? taps + 1 : 1; tapT = n; if (taps >= 5) { $("diag").classList.toggle("on"); diagLine(); taps = 0; } });
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-  const LABEL = { in: ["Masuk", "Checked in"], out: ["Keluar", "Checked out"], back: ["Kembali", "Back in"] };
-  let resultT = null;
-  // after a result the next scan waits until the face has left the camera (next person), or 20 s at most
-  let needGone = 0;
-  function result(kind, html, ms) { const c = $("rcard"); c.className = "rcard " + (kind || ""); c.innerHTML = html; $("result").classList.add("on"); clearTimeout(resultT); resultT = setTimeout(() => { $("result").classList.remove("on"); busy = false; cooldownUntil = Date.now() + 1500; needGone = Date.now() + 20000; }, ms || 3500); }
-  function greet() { const h = Number(new Intl.DateTimeFormat("en-GB", { timeZone: kiosk?.tz || "Asia/Makassar", hour: "numeric", hourCycle: "h23" }).format(new Date(Date.now() + offset))); return h < 11 ? "Selamat pagi" : h < 15 ? "Selamat siang" : h < 19 ? "Selamat sore" : "Selamat malam"; }
-  function showOk(r) {
-    const [id, en] = LABEL[r.label] || LABEL.in;
-    if (r.dup) return result("warn", `<h2>${esc(r.name)}</h2><div class="big">${esc(r.time)}</div><p>Sudah tercatat · Already recorded</p>`, 2800);
-    result("", `<p>${greet()},</p><h2>${esc(r.name)}</h2><div class="big">${esc(r.time)}</div><p><b style="color:var(--ink)">${id}</b> · ${en}</p>`, 3500);
-  }
   function clock() {
     if (!kiosk) return; const d = new Date(Date.now() + offset), tz = kiosk.tz || "Asia/Makassar";
     $("h-time").textContent = new Intl.DateTimeFormat("id-ID", { timeZone: tz, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(d);
@@ -78,7 +66,11 @@
   setInterval(() => { if (token) flush(); }, 20e3);
 
   /* ---------- camera + face ---------- */
-  let stream = null, running = false, busy = false, cooldownUntil = 0, modelsReady = false;
+  // Flow: the person taps MASUK (in) or PULANG (out) → the tablet looks for a known face for up to 30 seconds →
+  // success: chime + "Success" + their name · nothing after 30 s: "Please try again". No blink / eyes-closed step.
+  let stream = null, running = false, busy = false, modelsReady = false;
+  let mode = null, deadline = 0, lastSend = 0, stable = 0, misses = 0, resultT = null, cdT = null;
+  const SCAN_MS = 30000, SEND_GAP = 1300;
   async function loadModels() {
     if (modelsReady) return;
     const gl = (() => { try { const c = document.createElement("canvas"); return !!(c.getContext("webgl2") || c.getContext("webgl")); } catch (e) { return false; } })();
@@ -93,64 +85,93 @@
     modelsReady = true; D.modelsMs = Date.now() - t0;
   }
   async function startCam() {
-    show("cam"); prompt("Menyiapkan kamera…", "Starting the camera…");
+    show("cam"); idle(); prompt("Menyiapkan kamera…", "Starting the camera…"); $("choose").classList.add("wait");
     try {
       if (!stream) stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } }, audio: false });
       $("video").srcObject = stream; await $("video").play().catch(() => {});
       prompt("Menyiapkan pengenal wajah…", "Loading face recognition…"); D.stage = "models";
       await loadModels(); setTimeout(() => { if (token) hello(); }, 45e3);   // first report after it has run for a while
       try { if (navigator.wakeLock) await navigator.wakeLock.request("screen"); } catch (e) { /* not supported */ }
+      $("choose").classList.remove("wait"); idle();
       running = true; loop();
-    } catch (e) { diagErr(e); prompt("Kamera tidak bisa dibuka", "Camera unavailable — use PIN (" + (e.name || e.message) + ")", ""); if (token) hello(); }
+    } catch (e) { diagErr(e); $("choose").classList.remove("wait"); prompt("Kamera tidak bisa dibuka", "Camera unavailable — use PIN (" + (e.name || e.message) + ")", ""); if (token) hello(); }
   }
   function stopCam() { running = false; if (stream) { stream.getTracks().forEach((t) => t.stop()); stream = null; } }
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && token && $("cam").classList.contains("on") && !running) startCam(); });
 
-  const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
-  const ear = (e) => (dist(e[1], e[5]) + dist(e[2], e[4])) / (2 * dist(e[0], e[3]));
-  let live = { since: 0, base: 0, closed: false, blinked: false, misses: 0 }, unknownTries = 0;
-  // slow tablets (e.g. iPad Air 2, ~1-3 checks a second) can miss a quick blink, so they ask to close the eyes for a moment instead
-  const slow = () => D.detMs > 330;
-  const opts = () => new FA.TinyFaceDetectorOptions({ inputSize: slow() ? 224 : 320, scoreThreshold: 0.45 });
+  /* ---------- sound ---------- */
+  let AC = null, voiceReady = false;
+  function unlockAudio() {   // iPad only plays sound after a tap, so this runs on the MASUK / PULANG tap
+    try { AC = AC || new (window.AudioContext || window.webkitAudioContext)(); if (AC.state === "suspended") AC.resume(); } catch (e) { AC = null; }
+    try { if (window.speechSynthesis && !voiceReady) { const u = new SpeechSynthesisUtterance(" "); u.volume = 0; speechSynthesis.speak(u); voiceReady = true; } } catch (e) { /* no voice */ }
+  }
+  function tone(notes) {
+    if (!AC) return; let t = AC.currentTime + 0.01;
+    for (const [f, d] of notes) { const o = AC.createOscillator(), g = AC.createGain(); o.type = "sine"; o.frequency.value = f;
+      g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.35, t + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t + d);
+      o.connect(g); g.connect(AC.destination); o.start(t); o.stop(t + d + 0.03); t += d * 0.85; }
+  }
+  function say(text) { try { const s = window.speechSynthesis; if (!s) return; s.cancel(); const u = new SpeechSynthesisUtterance(text); u.lang = "en-US"; u.rate = 0.95; u.volume = 1; s.speak(u); } catch (e) { /* no voice */ } }
+  const soundOk = (text) => { tone([[880, 0.12], [1320, 0.2]]); setTimeout(() => say(text || "Success"), 280); };
+  const soundFail = () => { tone([[392, 0.22], [262, 0.34]]); setTimeout(() => say("Please try again"), 380); };
+
+  /* ---------- choose → scan → result ---------- */
+  const DIR = { in: ["MASUK", "Check in"], out: ["PULANG", "Check out"] };
+  function idle() {
+    mode = null; busy = false; clearInterval(cdT); $("cd").style.width = "0"; $("cam").classList.remove("scanning");
+    prompt("Pilih MASUK atau PULANG", "Tap Check in or Check out, then look at the camera", "");
+  }
+  function begin(dir) {
+    if (!modelsReady || !running) return;
+    unlockAudio(); mode = dir; deadline = Date.now() + SCAN_MS; lastSend = 0; stable = 0; misses = 0;
+    $("cam").classList.add("scanning"); $("scan-dir").textContent = `${DIR[dir][0]} · ${DIR[dir][1]}`; $("scan-dir").className = "scan-dir " + dir;
+    prompt("Lihat ke kamera", "Look at the camera", "face");
+    clearInterval(cdT); cdT = setInterval(() => { const left = Math.max(0, deadline - Date.now()); $("cd").style.width = (left / SCAN_MS * 100) + "%"; $("cd-s").textContent = Math.ceil(left / 1000) + " s"; }, 200);
+  }
+  $("btn-in").addEventListener("click", () => begin("in"));
+  $("btn-out").addEventListener("click", () => begin("out"));
+  $("btn-cancel").addEventListener("click", () => idle());
+  function result(kind, html, ms) { const c = $("rcard"); c.className = "rcard " + (kind || ""); c.innerHTML = html; $("result").classList.add("on"); clearTimeout(resultT); resultT = setTimeout(() => { $("result").classList.remove("on"); idle(); }, ms || 4000); }
+  function greet() { const h = Number(new Intl.DateTimeFormat("en-GB", { timeZone: kiosk?.tz || "Asia/Makassar", hour: "numeric", hourCycle: "h23" }).format(new Date(Date.now() + offset))); return h < 11 ? "Selamat pagi" : h < 15 ? "Selamat siang" : h < 19 ? "Selamat sore" : "Selamat malam"; }
+  function showOk(r, dir) {
+    mode = null; clearInterval(cdT); $("cam").classList.remove("scanning");
+    const d = DIR[r.dir || dir] || null;
+    if (r.dup) { soundOk("Already recorded"); return result("warn", `<h2>${esc(r.name)}</h2><div class="big">${esc(r.time)}</div><p>Sudah tercatat · Already recorded</p>`, 3200); }
+    soundOk("Success");
+    result("ok", `<div class="okmark">✓</div><p>${greet()},</p><h2>${esc(r.name)}</h2><div class="big">${esc(r.time)}</div><p><b class="dirtag ${esc(r.dir || dir || "")}">${d ? d[0] : "TERCATAT"}</b> · ${d ? d[1] : "Recorded"}</p>`, 4000);
+  }
+  function fail() {
+    mode = null; clearInterval(cdT); $("cam").classList.remove("scanning"); soundFail();
+    result("bad", `<div class="okmark bad">!</div><h2>Silakan coba lagi</h2><p>Please try again — face not recognised within 30 seconds.</p><p>Hadap lurus ke kamera di tempat yang terang, atau pakai PIN.</p>`, 4200);
+  }
+  const opts = () => new FA.TinyFaceDetectorOptions({ inputSize: D.detMs > 400 ? 224 : 320, scoreThreshold: 0.45 });
   async function loop() {
     while (running) {
-      await new Promise((r) => setTimeout(r, 120));
-      if (busy || !$("cam").classList.contains("on") || Date.now() < cooldownUntil) continue;
+      await new Promise((r) => setTimeout(r, mode ? 80 : 300));
+      if (!mode || busy || !$("cam").classList.contains("on")) continue;
+      if (Date.now() > deadline) { fail(); continue; }
       const v = $("video"); if (!v.videoWidth) continue;
       D.cam = `${v.videoWidth}x${v.videoHeight}`;
       let det = null; const t1 = Date.now();
-      try { det = await FA.detectSingleFace(v, opts()).withFaceLandmarks(); } catch (e) { diagErr(e); continue; }
-      D.frames++; D.detMs = Math.round(D.detMs ? D.detMs * 0.8 + (Date.now() - t1) * 0.2 : Date.now() - t1); if (det) D.faces++;
-      if (needGone) { if (!det) { if (++live.misses > 4) needGone = 0; } else { live.misses = 0; if (Date.now() < needGone) { prompt("Silakan, berikutnya", "Next person, please", ""); continue; } needGone = 0; } if (needGone || !det) continue; }
-      if (!det) { if (++live.misses > 4) { live = { since: 0, base: 0, closed: false, blinked: false, misses: 0 }; prompt("Lihat ke kamera", "Look at the camera"); } continue; }
-      live.misses = 0;
-      const box = det.detection.box;
-      if (box.width < v.videoWidth * 0.22) { prompt("Mendekat sedikit", "Come a little closer", "face"); continue; }
-      if (!live.since) live.since = Date.now();
-      const e = (ear(det.landmarks.getLeftEye()) + ear(det.landmarks.getRightEye())) / 2;
-      live.base = Math.max(live.base * 0.97, e);
-      if (!TEST_NOLIVE && !live.blinked) {
-        if (e < Math.min(0.24, live.base * 0.72)) { if (!live.closed) D.closed++; live.closed = true; }
-        else if (live.closed && e > live.base * 0.85) { live.blinked = true; D.blinks++; }
-        if (!live.blinked) {
-          if (slow()) { prompt(live.closed ? "Buka mata" : "Pejamkan mata sebentar", live.closed ? "Open your eyes" : "Close your eyes for a moment, then open", "face"); if (Date.now() - live.since > 15000) prompt("Pejamkan mata 1 detik, lalu buka", "Close your eyes for 1 second, then open — or use PIN", "face"); }
-          else { prompt("Kedipkan mata", "Blink your eyes", "face"); if (Date.now() - live.since > 12000) prompt("Kedipkan mata pelan-pelan", "Blink slowly — or use PIN", "face"); }
-          continue; }
-      }
-      busy = true; prompt("Mencocokkan…", "Checking…", "go");
-      let full = null; try { full = await FA.detectSingleFace(v, opts()).withFaceLandmarks().withFaceDescriptor(); } catch (err) { diagErr(err); full = null; }
-      if (!full) { busy = false; continue; }
-      D.sent++;
-      const body = { descriptor: Array.from(full.descriptor).map((x) => Math.round(x * 1e5) / 1e5), photo: snap() };
-      live = { since: 0, base: 0, closed: false, blinked: false, misses: 0 };
+      try { det = await FA.detectSingleFace(v, opts()).withFaceLandmarks().withFaceDescriptor(); } catch (e) { diagErr(e); continue; }
+      D.frames++; D.detMs = Math.round(D.detMs ? D.detMs * 0.8 + (Date.now() - t1) * 0.2 : Date.now() - t1);
+      if (!mode) continue;
+      if (!det) { stable = 0; if (++misses > 2) prompt("Lihat ke kamera", "Look at the camera", ""); continue; }
+      D.faces++; misses = 0;
+      if (det.detection.box.width < v.videoWidth * 0.2) { stable = 0; prompt("Mendekat sedikit", "Come a little closer", "face"); continue; }
+      if (++stable < 2) { prompt("Tahan sebentar…", "Hold still…", "face"); continue; }   // two clear frames in a row
+      if (Date.now() - lastSend < SEND_GAP) continue;
+      busy = true; lastSend = Date.now(); prompt("Mencocokkan…", "Checking…", "go"); D.sent++;
+      const dir = mode, body = { descriptor: Array.from(det.descriptor).map((x) => Math.round(x * 1e5) / 1e5), photo: snap(), dir };
       try {
         const r = await call("identify", body);
-        if (r.ok) { unknownTries = 0; showOk(r); }
-        else { unknownTries++; result("bad", `<h2>Wajah tidak dikenali</h2><p>Face not recognised${r.reason === "ambiguous" ? " (not sure who this is)" : ""}.</p><p>${unknownTries >= 2 ? "Silakan pakai PIN · Please use your PIN" : "Coba lagi, hadap lurus ke kamera · Try again, face the camera"}</p>`, 3000); if (unknownTries >= 2) setTimeout(openPin, 3000); }
+        if (!mode) { busy = false; continue; }   // cancelled meanwhile
+        if (r.ok) showOk(r, dir);
+        else { busy = false; stable = 0; prompt("Belum dikenali — tetap hadap kamera", r.reason === "ambiguous" ? "Not sure who this is — keep looking at the camera" : "Not recognised yet — keep looking at the camera", "face"); }
       } catch (err) {
         if (err.fatal) return;
-        if (!err.status || err.status >= 500) { enqueue("identify", body); result("warn", `<h2>Tersimpan offline</h2><p>Saved offline — sent automatically when the connection is back.</p>`, 3000); }
-        else result("bad", `<h2>Gagal</h2><p>${esc(err.message)}</p>`, 3000);
+        if (!err.status || err.status >= 500) { enqueue("identify", body); mode = null; soundOk("Saved"); result("warn", `<h2>Tersimpan offline</h2><p>Saved offline — sent automatically when the connection is back.</p>`, 3500); }
+        else { busy = false; prompt("Gagal — coba lagi", "Failed (" + err.message + ")", ""); }
       }
     }
   }
@@ -161,25 +182,28 @@
   }
 
   /* ---------- PIN ---------- */
-  let pin = "";
+  let pin = "", pinDir = "in";
   const keys = $("keys"); keys.innerHTML = ["1","2","3","4","5","6","7","8","9","⌫","0","✓"].map((k) => `<button type="button" data-k="${k}">${k}</button>`).join("");
   const dots = () => $("pin-dots").querySelectorAll("i").forEach((d, i) => d.classList.toggle("f", i < pin.length));
+  const pinDirShow = () => document.querySelectorAll("[data-pdir]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.pdir === pinDir)));
+  document.querySelectorAll("[data-pdir]").forEach((b) => b.addEventListener("click", () => { pinDir = b.dataset.pdir; pinDirShow(); }));
   keys.addEventListener("click", (ev) => { const k = ev.target.closest("[data-k]")?.dataset.k; if (!k) return; if (k === "⌫") pin = pin.slice(0, -1); else if (k === "✓") $("pin-form").requestSubmit(); else if (pin.length < 6) pin += k; dots(); });
-  function openPin() { pin = ""; dots(); $("pin-err").textContent = ""; $("pin-emp").value = ""; show("pin"); setTimeout(() => $("pin-emp").focus(), 50); }
+  function openPin() { unlockAudio(); pinDir = mode || pinDir || "in"; mode = null; clearInterval(cdT); $("cam").classList.remove("scanning"); pin = ""; dots(); pinDirShow(); $("pin-err").textContent = ""; $("pin-emp").value = ""; show("pin"); setTimeout(() => $("pin-emp").focus(), 50); }
   $("btn-pin").addEventListener("click", openPin);
-  $("pin-cancel").addEventListener("click", () => { unknownTries = 0; show("cam"); });
+  $("btn-pin2").addEventListener("click", openPin);
+  $("pin-cancel").addEventListener("click", () => { show("cam"); idle(); });
   $("btn-fs").addEventListener("click", () => { (document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen()).catch(() => {}); });
   $("pin-form").addEventListener("submit", async (ev) => {
     ev.preventDefault(); const empNo = $("pin-emp").value.trim();
     if (!empNo || pin.length !== 6) { $("pin-err").textContent = "Isi ID karyawan dan 6 digit PIN · Enter your Employee ID and 6-digit PIN"; return; }
-    const body = { empNo, pin, photo: stream ? snap() : "" }; pin = ""; dots();
+    const dir = pinDir, body = { empNo, pin, photo: stream ? snap() : "", dir }; pin = ""; dots();
     try {
       const r = await call("pin", body);
-      if (r.ok) { unknownTries = 0; show("cam"); showOk(r); }
-      else $("pin-err").textContent = r.reason === "locked" ? "Terlalu banyak percobaan — coba lagi 15 menit · Too many tries, wait 15 minutes" : r.reason === "no_pin" ? "PIN belum dibuat — atur di HRM → My Profile · No PIN set yet" : "ID atau PIN salah · Wrong ID or PIN";
+      if (r.ok) { show("cam"); showOk(r, dir); }
+      else { soundFail(); $("pin-err").textContent = r.reason === "locked" ? "Terlalu banyak percobaan — coba lagi 15 menit · Too many tries, wait 15 minutes" : r.reason === "no_pin" ? "PIN belum dibuat — atur di HRM → My Profile · No PIN set yet" : "ID atau PIN salah · Wrong ID or PIN"; }
     } catch (err) {
       if (err.fatal) return;
-      if (!err.status || err.status >= 500) { enqueue("pin", body); show("cam"); result("warn", `<h2>Tersimpan offline</h2><p>Saved offline — sent automatically when the connection is back.</p>`, 3000); }
+      if (!err.status || err.status >= 500) { enqueue("pin", body); show("cam"); soundOk("Saved"); result("warn", `<h2>Tersimpan offline</h2><p>Saved offline — sent automatically when the connection is back.</p>`, 3500); }
       else $("pin-err").textContent = "Gagal · Failed (" + err.message + ")";
     }
   });

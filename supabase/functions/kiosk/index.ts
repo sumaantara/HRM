@@ -12,8 +12,9 @@
 //   resetpin {empId}                    HRD/GM/Admin
 // Tablets ({token}):
 //   pair {code} → {token, kiosk}        hello → kiosk info, server time, settings (+ photo clean-up once a day)
-//   identify {descriptor, photo, at?}   face → employee → scan recorded (server time; "at" only for scans queued offline)
-//   pin {empNo, pin, photo, at?}        PIN fallback (5 wrong tries → locked 15 minutes)
+//   identify {descriptor, photo, dir?, at?}  face → employee → scan recorded (server time; "at" only for scans queued offline;
+//                                            dir = "in" | "out" from the MASUK / PULANG button)
+//   pin {empNo, pin, photo, dir?, at?}  PIN fallback (5 wrong tries → locked 15 minutes)
 // Face descriptors never leave the server; tablets only send the descriptor of the face in front of them.
 import { createClient } from "npm:@supabase/supabase-js@2.117.2";
 import { applyPunch, localParts, matchFace, punchLabel, validDesc, weakPin } from "./core.mjs";
@@ -128,11 +129,13 @@ Deno.serve(async (req) => {
       }
       if (!e) return json(200, { ok: false, reason: "unknown" });
 
+      // MASUK / PULANG chosen on the tablet (kept with the scan; in/out times still come from first/last scan of the day)
+      const dir = body.dir === "in" || body.dir === "out" ? body.dir : "";
       const lp = localParts(when, tz), ym = lp.date.slice(0, 7), apath = `attendance/${e.id}_${ym}`;
       const doc = (await get(apath)) || { id: `${e.id}_${ym}`, empId: e.id, month: ym, days: {} };
       const r = applyPunch(doc.days?.[lp.date] || null, lp.min);
-      if (r.dup) return json(200, { ok: true, dup: true, name: e.name, empNo: e.empNo, time: lp.hm, label: punchLabel(r.n) });
-      const day = Object.assign(r.day, { kh: (r.day.kh || []).concat([{ t: lp.hm, how, k: k.id }]).slice(-20) });
+      if (r.dup) return json(200, { ok: true, dup: true, name: e.name, empNo: e.empNo, time: lp.hm, label: punchLabel(r.n), dir });
+      const day = Object.assign(r.day, { kh: (r.day.kh || []).concat([Object.assign({ t: lp.hm, how, k: k.id }, dir ? { dir } : {})]).slice(-20) });
       doc.days = Object.assign({}, doc.days, { [lp.date]: day }); doc.updatedAt = nowIso;
       await put(apath, doc);
       let photo = "";
@@ -143,7 +146,7 @@ Deno.serve(async (req) => {
             const up = await admin.storage.from("kiosk").upload(photo, new Blob([bin], { type: "image/jpeg" }), { contentType: "image/jpeg", upsert: true }); if (up.error) photo = ""; } } catch { photo = ""; }
       }
       await touch();
-      return json(200, { ok: true, name: e.name, empNo: e.empNo, time: lp.hm, date: lp.date, label: punchLabel(r.n), how, dist, photo: !!photo });
+      return json(200, { ok: true, name: e.name, empNo: e.empNo, time: lp.hm, date: lp.date, label: punchLabel(r.n), dir, how, dist, photo: !!photo });
     }
 
     // ---------------------------------------------------------------- signed-in HRM users
