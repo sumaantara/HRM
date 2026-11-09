@@ -75,7 +75,10 @@ Deno.serve(async (req) => {
       const touch = () => put("kiosks/" + k.id, Object.assign({}, k, { lastSeen: nowIso }));
 
       if (action === "hello") {
-        await touch();
+        // what the tablet reports about itself (browser, camera, face-detection speed, last screen, last error) — for troubleshooting only
+        const dg = body.diag && typeof body.diag === "object" ? Object.fromEntries(Object.entries(body.diag as Record<string, unknown>).slice(0, 16)
+          .filter(([, v]) => ["string", "number", "boolean"].includes(typeof v)).map(([k, v]) => [String(k).slice(0, 20), typeof v === "string" ? v.slice(0, 200) : v])) : null;
+        if (dg) await put("kiosks/" + k.id, Object.assign({}, k, { lastSeen: nowIso, diag: Object.assign(dg, { at: nowIso }) })); else await touch();
         // photo clean-up, at most once a day (folders are named by date)
         const st = (await get("kioskstate/main")) || {};
         if (!st.lastCleanup || Date.parse(st.lastCleanup) < Date.now() - 20 * 3600e3) {

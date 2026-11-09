@@ -348,7 +348,7 @@ const dv = (k, n, d) => (S.drafts[k] && n in S.drafts[k]) ? S.drafts[k][n] : d;
    rd/<uid>, ph/<uid>   per-person read receipts and self-uploaded profile photo
    audit/<uid>/m/<yyyy-mm>  each person's own monthly audit trail
    requests, notifs, counters   shared working data (Contributors write) */
-const APP_VERSION = "4.10.0", SCHEMA = 2;
+const APP_VERSION = "4.10.1", SCHEMA = 2;
 const PRIVATE_FIELDS = ["phone","gender","birthDate","address","exitReason","contract","contracts","notes","quotaLog"];
 const SUB_COLS = ["employees","private","requests","candidates","tasks","reviews","reminders","notifs","announcements","attendance","attImports","backups","dec","links","rd","ph","sub","payslips","payruns","appraisals","kiosks","facestat"];
 const CORE_COLS = ["employees","requests","tasks","notifs","announcements","attendance"];
@@ -2591,7 +2591,7 @@ function kioskSettings(ro){
     <div class="fields"><label class="f"><span>Keep proof photos for</span><select data-cfg="kiosk.retentionDays" ${ro?"disabled":""}>${[7,30].map(d => `<option value="${d}" ${Number(k.retentionDays)===d?"selected":""}>${d} days</option>`).join("")}</select><small>A small photo (±15 KB) is taken at every scan for checking misuse, then deleted automatically.</small></label>
       <label class="f"><span>Face matching</span><select data-cfg="kiosk.threshold" ${ro?"disabled":""}>${[[0.45,"Strict — fewer mix-ups, more “not recognised”"],[0.5,"Normal (recommended)"],[0.55,"Relaxed — for poor lighting"]].map(([v,l]) => `<option value="${v}" ${Number(k.threshold)===v?"selected":""}>${l}</option>`).join("")}</select></label></div>
     ${list.length ? `<div class="tw" style="border:1px solid var(--line);border-radius:10px"><table class="t rt"><thead><tr><th>Tablet</th><th>Office</th><th>Status</th><th>Last seen</th><th></th></tr></thead><tbody>${list.map(x => `<tr><td class="wide"><b style="font-weight:600">${esc(x.name || "Tablet")}</b></td><td data-l="Office">${esc(x.office)} <span class="tag">${tzLabel(x.tz)}</span></td>
-      <td data-l="Status">${x.tokenHash ? `<span class="pill p-approved">Paired</span>` : x.pairExp && x.pairExp > new Date().toISOString() ? `<span class="pill p-pending">Waiting for code</span>` : `<span class="pill p-neutral">Not paired</span>`}</td><td data-l="Last seen" class="small muted">${seen(x)}</td>
+      <td data-l="Status">${x.tokenHash ? `<span class="pill p-approved">Paired</span>` : x.pairExp && x.pairExp > new Date().toISOString() ? `<span class="pill p-pending">Waiting for code</span>` : `<span class="pill p-neutral">Not paired</span>`}</td><td data-l="Last seen" class="small muted">${seen(x)}${x.diag ? `<span style="display:block" title="${esc(x.diag.ua || "")}">${esc(x.diag.stage || "")} · ${esc(x.diag.backend || "?")} · ${Number(x.diag.detMs) || 0} ms/check · ${Number(x.diag.faces) || 0} faces · ${Number(x.diag.sent) || 0} sent${x.diag.err ? ` · <span style="color:var(--bad)">${esc(x.diag.err)}</span>` : ""}</span>` : ""}</td>
       <td class="r nw">${ro ? "" : `<button class="btn sm" type="button" data-act="kiosk-code" data-id="${esc(x.id)}">New code</button> <button class="btn sm" type="button" data-act="kiosk-revoke" data-id="${esc(x.id)}">${S.ui.kRevoke === x.id ? "Tap again" : "Remove"}</button>`}</td></tr>`).join("")}</tbody></table></div>` : `<div class="empty"><b>No tablets yet</b>Add one per office entrance.</div>`}
   </div>`;
 }

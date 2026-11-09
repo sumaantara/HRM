@@ -11,6 +11,9 @@
   const TEST_NOLIVE = local && q.get("nolive") === "1";
   const FN = (CFG.functionsUrl || (CFG.supabaseUrl + "/functions/v1")) + "/kiosk";
   let token = LS.get("hrm.kiosk.token"), kiosk = LS.get("hrm.kiosk.info"), offset = 0, threshold = 0.5;
+  // what the tablet is doing, sent with "hello" so HR / support can see why a tablet doesn't record (no photos, no personal data)
+  const D = { v: "2", ua: navigator.userAgent.slice(0, 160), stage: "start", backend: "", modelsMs: 0, cam: "", detMs: 0, frames: 0, faces: 0, closed: 0, blinks: 0, sent: 0, err: "" };
+  const diagErr = (e) => { D.err = String((e && (e.name ? e.name + ": " : "") + (e.message || e)) || "").slice(0, 160); };
 
   /* ---------- server ---------- */
   async function call(action, body) {
@@ -36,7 +39,10 @@
   /* ---------- screens ---------- */
   const show = (id) => { for (const s of document.querySelectorAll(".screen")) s.classList.toggle("on", s.id === id); $("hdr").hidden = !(id === "cam" || id === "pin"); };
   let toastT = null; const toast = (m) => { const t = $("toast"); t.textContent = m; t.classList.add("on"); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove("on"), 3000); };
-  const prompt = (id, en, cls) => { $("prompt").innerHTML = `<b>${id}</b><span>${en || ""}</span>`; $("ring").className = "ring " + (cls || ""); };
+  const prompt = (id, en, cls) => { $("prompt").innerHTML = `<b>${id}</b><span>${en || ""}</span>`; $("ring").className = "ring " + (cls || ""); D.stage = String(en || id).slice(0, 60); diagLine(); };
+  // tap the clock 5 times to see the diagnostics line
+  let taps = 0, tapT = 0; const diagLine = () => { const el = $("diag"); if (el && el.classList.contains("on")) el.textContent = `${D.backend || "?"} · det ${D.detMs} ms · frames ${D.frames} · faces ${D.faces} · closed ${D.closed} · blinks ${D.blinks} · sent ${D.sent} · ${D.cam}${D.err ? " · " + D.err : ""}`; };
+  document.addEventListener("click", (ev) => { if (!ev.target.closest || !ev.target.closest(".clock")) return; const n = Date.now(); taps = n - tapT < 800 ? taps + 1 : 1; tapT = n; if (taps >= 5) { $("diag").classList.toggle("on"); diagLine(); taps = 0; } });
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const LABEL = { in: ["Masuk", "Checked in"], out: ["Keluar", "Checked out"], back: ["Kembali", "Back in"] };
   let resultT = null;
@@ -64,7 +70,7 @@
     catch (e) { $("pair-err").textContent = e.message === "code_invalid" ? "Kode salah atau kedaluwarsa · Invalid or expired code" : "Gagal · Failed (" + e.message + ")"; }
   });
   async function hello() {
-    try { const t0 = Date.now(), r = await call("hello"); offset = Date.parse(r.serverTime) - (t0 + Date.now()) / 2; kiosk = r.kiosk; threshold = r.threshold || 0.5; LS.set("hrm.kiosk.info", kiosk);
+    try { const t0 = Date.now(), r = await call("hello", { diag: D }); offset = Date.parse(r.serverTime) - (t0 + Date.now()) / 2; kiosk = r.kiosk; threshold = r.threshold || 0.5; LS.set("hrm.kiosk.info", kiosk);
       $("h-office").innerHTML = `${esc(kiosk.office)}<small>${esc(kiosk.name || "")}</small>`; clock(); flush(); }
     catch (e) { if (kiosk) { $("h-office").innerHTML = `${esc(kiosk.office)}<small>offline</small>`; } }
   }
@@ -76,21 +82,26 @@
   async function loadModels() {
     if (modelsReady) return;
     const gl = (() => { try { const c = document.createElement("canvas"); return !!(c.getContext("webgl2") || c.getContext("webgl")); } catch (e) { return false; } })();
+    const t0 = Date.now();
     try { if (!gl || !(await FA.tf.setBackend("webgl"))) await FA.tf.setBackend("cpu"); } catch (e) { await FA.tf.setBackend("cpu"); }
     await FA.tf.ready();
+    // older iPads: WebGL can be present but compute wrong numbers — check once and fall back to the CPU
+    if (FA.tf.getBackend() === "webgl") { try { const r = FA.tf.tidy(() => FA.tf.tensor1d([1.5, -2.25, 3]).mul(2).add(0.5).dataSync()); if (Math.abs(r[0] - 3.5) > 1e-2 || Math.abs(r[1] + 4) > 1e-2 || Math.abs(r[2] - 6.5) > 1e-2) throw new Error("webgl_math"); } catch (e) { diagErr(e); await FA.tf.setBackend("cpu"); await FA.tf.ready(); } }
+    D.backend = FA.tf.getBackend();
     const base = "vendor/face-api/model";
     await Promise.all([FA.nets.tinyFaceDetector.loadFromUri(base), FA.nets.faceLandmark68Net.loadFromUri(base), FA.nets.faceRecognitionNet.loadFromUri(base)]);
-    modelsReady = true;
+    modelsReady = true; D.modelsMs = Date.now() - t0;
   }
   async function startCam() {
     show("cam"); prompt("Menyiapkan kamera…", "Starting the camera…");
     try {
       if (!stream) stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } }, audio: false });
       $("video").srcObject = stream; await $("video").play().catch(() => {});
-      await loadModels();
+      prompt("Menyiapkan pengenal wajah…", "Loading face recognition…"); D.stage = "models";
+      await loadModels(); setTimeout(() => { if (token) hello(); }, 45e3);   // first report after it has run for a while
       try { if (navigator.wakeLock) await navigator.wakeLock.request("screen"); } catch (e) { /* not supported */ }
       running = true; loop();
-    } catch (e) { prompt("Kamera tidak bisa dibuka", "Camera unavailable — use PIN (" + (e.name || e.message) + ")", ""); }
+    } catch (e) { diagErr(e); prompt("Kamera tidak bisa dibuka", "Camera unavailable — use PIN (" + (e.name || e.message) + ")", ""); if (token) hello(); }
   }
   function stopCam() { running = false; if (stream) { stream.getTracks().forEach((t) => t.stop()); stream = null; } }
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && token && $("cam").classList.contains("on") && !running) startCam(); });
@@ -98,13 +109,18 @@
   const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
   const ear = (e) => (dist(e[1], e[5]) + dist(e[2], e[4])) / (2 * dist(e[0], e[3]));
   let live = { since: 0, base: 0, closed: false, blinked: false, misses: 0 }, unknownTries = 0;
-  const opts = () => new FA.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.5 });
+  // slow tablets (e.g. iPad Air 2, ~1-3 checks a second) can miss a quick blink, so they ask to close the eyes for a moment instead
+  const slow = () => D.detMs > 330;
+  const opts = () => new FA.TinyFaceDetectorOptions({ inputSize: slow() ? 224 : 320, scoreThreshold: 0.45 });
   async function loop() {
     while (running) {
       await new Promise((r) => setTimeout(r, 120));
       if (busy || !$("cam").classList.contains("on") || Date.now() < cooldownUntil) continue;
       const v = $("video"); if (!v.videoWidth) continue;
-      let det = null; try { det = await FA.detectSingleFace(v, opts()).withFaceLandmarks(); } catch (e) { continue; }
+      D.cam = `${v.videoWidth}x${v.videoHeight}`;
+      let det = null; const t1 = Date.now();
+      try { det = await FA.detectSingleFace(v, opts()).withFaceLandmarks(); } catch (e) { diagErr(e); continue; }
+      D.frames++; D.detMs = Math.round(D.detMs ? D.detMs * 0.8 + (Date.now() - t1) * 0.2 : Date.now() - t1); if (det) D.faces++;
       if (needGone) { if (!det) { if (++live.misses > 4) needGone = 0; } else { live.misses = 0; if (Date.now() < needGone) { prompt("Silakan, berikutnya", "Next person, please", ""); continue; } needGone = 0; } if (needGone || !det) continue; }
       if (!det) { if (++live.misses > 4) { live = { since: 0, base: 0, closed: false, blinked: false, misses: 0 }; prompt("Lihat ke kamera", "Look at the camera"); } continue; }
       live.misses = 0;
@@ -114,13 +130,17 @@
       const e = (ear(det.landmarks.getLeftEye()) + ear(det.landmarks.getRightEye())) / 2;
       live.base = Math.max(live.base * 0.97, e);
       if (!TEST_NOLIVE && !live.blinked) {
-        if (e < Math.min(0.24, live.base * 0.72)) live.closed = true;
-        else if (live.closed && e > live.base * 0.85) live.blinked = true;
-        if (!live.blinked) { prompt("Kedipkan mata", "Blink your eyes", "face"); if (Date.now() - live.since > 12000) prompt("Kedipkan mata pelan-pelan", "Blink slowly — or use PIN", "face"); continue; }
+        if (e < Math.min(0.24, live.base * 0.72)) { if (!live.closed) D.closed++; live.closed = true; }
+        else if (live.closed && e > live.base * 0.85) { live.blinked = true; D.blinks++; }
+        if (!live.blinked) {
+          if (slow()) { prompt(live.closed ? "Buka mata" : "Pejamkan mata sebentar", live.closed ? "Open your eyes" : "Close your eyes for a moment, then open", "face"); if (Date.now() - live.since > 15000) prompt("Pejamkan mata 1 detik, lalu buka", "Close your eyes for 1 second, then open — or use PIN", "face"); }
+          else { prompt("Kedipkan mata", "Blink your eyes", "face"); if (Date.now() - live.since > 12000) prompt("Kedipkan mata pelan-pelan", "Blink slowly — or use PIN", "face"); }
+          continue; }
       }
       busy = true; prompt("Mencocokkan…", "Checking…", "go");
-      let full = null; try { full = await FA.detectSingleFace(v, opts()).withFaceLandmarks().withFaceDescriptor(); } catch (err) { full = null; }
+      let full = null; try { full = await FA.detectSingleFace(v, opts()).withFaceLandmarks().withFaceDescriptor(); } catch (err) { diagErr(err); full = null; }
       if (!full) { busy = false; continue; }
+      D.sent++;
       const body = { descriptor: Array.from(full.descriptor).map((x) => Math.round(x * 1e5) / 1e5), photo: snap() };
       live = { since: 0, base: 0, closed: false, blinked: false, misses: 0 };
       try {
