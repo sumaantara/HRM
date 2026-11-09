@@ -85,6 +85,10 @@ video{width:100%;height:100%;object-fit:cover;transform:scaleX(-1);display:block
 .scanning .choose,.scanning .actions{display:none}
 .scanning-actions{display:none}.scanning .scanning-actions{display:flex}
 .standalone #btn-fs{display:none}
+/* Safari full screen puts its own ✕ button top-left and the status bar on top — keep the logo clear of them */
+.fs header{padding-top:calc(30px + var(--safe-t));padding-left:92px}
+.fs #cam{padding-top:calc(100px + var(--safe-t))}
+.fs .net{top:calc(94px + var(--safe-t))}
 
 @media (orientation:landscape){
   #cam{display:none;flex-direction:row;gap:42px;padding:calc(84px + var(--safe-t)) 40px calc(24px + var(--safe-b))}
@@ -173,6 +177,6 @@ video{width:100%;height:100%;object-fit:cover;transform:scaleX(-1);display:block
 <canvas id="snap" hidden></canvas>
 <script src="js/config.js"></script>
 <script src="vendor/face-api/face-api.js"></script>
-<script src="js/kiosk.js?v=4"></script>
+<script src="js/kiosk.js?v=5"></script>
 </body>
 </html>

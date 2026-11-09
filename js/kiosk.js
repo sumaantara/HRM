@@ -11,7 +11,7 @@
   const FN = (CFG.functionsUrl || (CFG.supabaseUrl + "/functions/v1")) + "/kiosk";
   let token = LS.get("hrm.kiosk.token"), kiosk = LS.get("hrm.kiosk.info"), offset = 0, threshold = 0.5;
   // what the tablet is doing, sent with "hello" so HR / support can see why a tablet doesn't record (no photos, no personal data)
-  const D = { v: "4", ua: navigator.userAgent.slice(0, 160), stage: "start", backend: "", modelsMs: 0, cam: "", detMs: 0, frames: 0, faces: 0, sent: 0, err: "" };
+  const D = { v: "4.1", ua: navigator.userAgent.slice(0, 160), stage: "start", backend: "", modelsMs: 0, cam: "", detMs: 0, frames: 0, faces: 0, sent: 0, err: "" };
   const diagErr = (e) => { D.err = String((e && (e.name ? e.name + ": " : "") + (e.message || e)) || "").slice(0, 160); };
 
   /* ---------- server ---------- */
@@ -196,6 +196,8 @@
   // Full screen: best is "Add to Home Screen" (opens with no Safari bar at all). Otherwise try the Fullscreen API.
   const standalone = window.navigator.standalone === true || (window.matchMedia && matchMedia("(display-mode: standalone), (display-mode: fullscreen)").matches);
   if (standalone) document.documentElement.classList.add("standalone");
+  const fsMark = () => document.documentElement.classList.toggle("fs", !!(document.fullscreenElement || document.webkitFullscreenElement));
+  document.addEventListener("fullscreenchange", fsMark); document.addEventListener("webkitfullscreenchange", fsMark);
   $("btn-fs").addEventListener("click", () => {
     const de = document.documentElement, fsEl = document.fullscreenElement || document.webkitFullscreenElement;
     const req = de.requestFullscreen || de.webkitRequestFullscreen, exit = document.exitFullscreen || document.webkitExitFullscreen;
