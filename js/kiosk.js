@@ -11,7 +11,7 @@
   const FN = (CFG.functionsUrl || (CFG.supabaseUrl + "/functions/v1")) + "/kiosk";
   let token = LS.get("hrm.kiosk.token"), kiosk = LS.get("hrm.kiosk.info"), offset = 0, threshold = 0.5;
   // what the tablet is doing, sent with "hello" so HR / support can see why a tablet doesn't record (no photos, no personal data)
-  const D = { v: "3", ua: navigator.userAgent.slice(0, 160), stage: "start", backend: "", modelsMs: 0, cam: "", detMs: 0, frames: 0, faces: 0, sent: 0, err: "" };
+  const D = { v: "4", ua: navigator.userAgent.slice(0, 160), stage: "start", backend: "", modelsMs: 0, cam: "", detMs: 0, frames: 0, faces: 0, sent: 0, err: "" };
   const diagErr = (e) => { D.err = String((e && (e.name ? e.name + ": " : "") + (e.message || e)) || "").slice(0, 160); };
 
   /* ---------- server ---------- */
@@ -66,7 +66,7 @@
   setInterval(() => { if (token) flush(); }, 20e3);
 
   /* ---------- camera + face ---------- */
-  // Flow: the person taps MASUK (in) or PULANG (out) → the tablet looks for a known face for up to 30 seconds →
+  // Flow: the person taps IN or OUT → the tablet looks for a known face for up to 30 seconds →
   // success: chime + "Success" + their name · nothing after 30 s: "Please try again". No blink / eyes-closed step.
   let stream = null, running = false, busy = false, modelsReady = false;
   let mode = null, deadline = 0, lastSend = 0, stable = 0, misses = 0, resultT = null, cdT = null;
@@ -101,7 +101,7 @@
 
   /* ---------- sound ---------- */
   let AC = null, voiceReady = false;
-  function unlockAudio() {   // iPad only plays sound after a tap, so this runs on the MASUK / PULANG tap
+  function unlockAudio() {   // iPad only plays sound after a tap, so this runs on the IN / OUT tap
     try { AC = AC || new (window.AudioContext || window.webkitAudioContext)(); if (AC.state === "suspended") AC.resume(); } catch (e) { AC = null; }
     try { if (window.speechSynthesis && !voiceReady) { const u = new SpeechSynthesisUtterance(" "); u.volume = 0; speechSynthesis.speak(u); voiceReady = true; } } catch (e) { /* no voice */ }
   }
@@ -116,15 +116,16 @@
   const soundFail = () => { tone([[392, 0.22], [262, 0.34]]); setTimeout(() => say("Please try again"), 380); };
 
   /* ---------- choose → scan → result ---------- */
-  const DIR = { in: ["MASUK", "Check in"], out: ["PULANG", "Check out"] };
+  const DIR = { in: ["IN", "Masuk"], out: ["OUT", "Pulang"] };
+  const CK = (k) => `<div class="okmark ${k || ""}"><svg viewBox="0 0 52 52" aria-hidden="true">${k ? '<path class="ck" d="M26 14v16M26 38v1"/>' : '<path class="ck" d="M14 27l8 8 16-17"/>'}</svg></div>`;
   function idle() {
-    mode = null; busy = false; clearInterval(cdT); $("cd").style.width = "0"; $("cam").classList.remove("scanning");
-    prompt("Pilih MASUK atau PULANG", "Tap Check in or Check out, then look at the camera", "");
+    mode = null; busy = false; clearInterval(cdT); $("cd").style.width = "0"; $("cam").classList.remove("scanning", "d-in", "d-out");
+    prompt("Tekan IN atau OUT", "Tap IN or OUT, then look at the camera", "");
   }
   function begin(dir) {
     if (!modelsReady || !running) return;
     unlockAudio(); mode = dir; deadline = Date.now() + SCAN_MS; lastSend = 0; stable = 0; misses = 0;
-    $("cam").classList.add("scanning"); $("scan-dir").textContent = `${DIR[dir][0]} · ${DIR[dir][1]}`; $("scan-dir").className = "scan-dir " + dir;
+    $("cam").classList.remove("d-in", "d-out"); $("cam").classList.add("scanning", "d-" + dir); $("scan-dir").textContent = `${DIR[dir][0]} · ${DIR[dir][1]}`; $("scan-dir").className = "scan-dir " + dir;
     prompt("Lihat ke kamera", "Look at the camera", "face");
     clearInterval(cdT); cdT = setInterval(() => { const left = Math.max(0, deadline - Date.now()); $("cd").style.width = (left / SCAN_MS * 100) + "%"; $("cd-s").textContent = Math.ceil(left / 1000) + " s"; }, 200);
   }
@@ -136,13 +137,13 @@
   function showOk(r, dir) {
     mode = null; clearInterval(cdT); $("cam").classList.remove("scanning");
     const d = DIR[r.dir || dir] || null;
-    if (r.dup) { soundOk("Already recorded"); return result("warn", `<h2>${esc(r.name)}</h2><div class="big">${esc(r.time)}</div><p>Sudah tercatat · Already recorded</p>`, 3200); }
+    if (r.dup) { soundOk("Already recorded"); return result("warn", `${CK("warn")}<h2>${esc(r.name)}</h2><div class="big">${esc(r.time)}</div><p>Sudah tercatat · Already recorded</p>`, 3200); }
     soundOk("Success");
-    result("ok", `<div class="okmark">✓</div><p>${greet()},</p><h2>${esc(r.name)}</h2><div class="big">${esc(r.time)}</div><p><b class="dirtag ${esc(r.dir || dir || "")}">${d ? d[0] : "TERCATAT"}</b> · ${d ? d[1] : "Recorded"}</p>`, 4000);
+    result("ok", `${CK()}<p>${greet()},</p><h2>${esc(r.name)}</h2><div class="big">${esc(r.time)}</div><p><b class="dirtag ${esc(r.dir || dir || "")}">${d ? d[0] : "TERCATAT"}</b> · ${d ? d[1] : "Recorded"}</p>`, 4000);
   }
   function fail() {
     mode = null; clearInterval(cdT); $("cam").classList.remove("scanning"); soundFail();
-    result("bad", `<div class="okmark bad">!</div><h2>Silakan coba lagi</h2><p>Please try again — face not recognised within 30 seconds.</p><p>Hadap lurus ke kamera di tempat yang terang, atau pakai PIN.</p>`, 4200);
+    result("bad", `${CK("bad")}<h2>Silakan coba lagi</h2><p>Please try again — face not recognised within 30 seconds.</p><p>Hadap lurus ke kamera di tempat yang terang, atau pakai PIN.</p>`, 4200);
   }
   const opts = () => new FA.TinyFaceDetectorOptions({ inputSize: D.detMs > 400 ? 224 : 320, scoreThreshold: 0.45 });
   async function loop() {
@@ -170,7 +171,7 @@
         else { busy = false; stable = 0; prompt("Belum dikenali — tetap hadap kamera", r.reason === "ambiguous" ? "Not sure who this is — keep looking at the camera" : "Not recognised yet — keep looking at the camera", "face"); }
       } catch (err) {
         if (err.fatal) return;
-        if (!err.status || err.status >= 500) { enqueue("identify", body); mode = null; soundOk("Saved"); result("warn", `<h2>Tersimpan offline</h2><p>Saved offline — sent automatically when the connection is back.</p>`, 3500); }
+        if (!err.status || err.status >= 500) { enqueue("identify", body); mode = null; soundOk("Saved"); result("warn", `${CK("warn")}<h2>Tersimpan offline</h2><p>Saved offline — sent automatically when the connection is back.</p>`, 3500); }
         else { busy = false; prompt("Gagal — coba lagi", "Failed (" + err.message + ")", ""); }
       }
     }
@@ -188,11 +189,23 @@
   const pinDirShow = () => document.querySelectorAll("[data-pdir]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.pdir === pinDir)));
   document.querySelectorAll("[data-pdir]").forEach((b) => b.addEventListener("click", () => { pinDir = b.dataset.pdir; pinDirShow(); }));
   keys.addEventListener("click", (ev) => { const k = ev.target.closest("[data-k]")?.dataset.k; if (!k) return; if (k === "⌫") pin = pin.slice(0, -1); else if (k === "✓") $("pin-form").requestSubmit(); else if (pin.length < 6) pin += k; dots(); });
-  function openPin() { unlockAudio(); pinDir = mode || pinDir || "in"; mode = null; clearInterval(cdT); $("cam").classList.remove("scanning"); pin = ""; dots(); pinDirShow(); $("pin-err").textContent = ""; $("pin-emp").value = ""; show("pin"); setTimeout(() => $("pin-emp").focus(), 50); }
+  function openPin() { unlockAudio(); pinDir = mode || pinDir || "in"; mode = null; clearInterval(cdT); $("cam").classList.remove("scanning"); $("cam").classList.remove("d-in", "d-out"); pin = ""; dots(); pinDirShow(); $("pin-err").textContent = ""; $("pin-emp").value = ""; show("pin"); setTimeout(() => $("pin-emp").focus(), 50); }
   $("btn-pin").addEventListener("click", openPin);
   $("btn-pin2").addEventListener("click", openPin);
   $("pin-cancel").addEventListener("click", () => { show("cam"); idle(); });
-  $("btn-fs").addEventListener("click", () => { (document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen()).catch(() => {}); });
+  // Full screen: best is "Add to Home Screen" (opens with no Safari bar at all). Otherwise try the Fullscreen API.
+  const standalone = window.navigator.standalone === true || (window.matchMedia && matchMedia("(display-mode: standalone), (display-mode: fullscreen)").matches);
+  if (standalone) document.documentElement.classList.add("standalone");
+  $("btn-fs").addEventListener("click", () => {
+    const de = document.documentElement, fsEl = document.fullscreenElement || document.webkitFullscreenElement;
+    const req = de.requestFullscreen || de.webkitRequestFullscreen, exit = document.exitFullscreen || document.webkitExitFullscreen;
+    if (fsEl && exit) { try { exit.call(document); } catch (e) { /* ignore */ } return; }
+    let p = null; try { p = req ? req.call(de) : null; } catch (e) { p = null; }
+    const hint = () => toast("Untuk layar penuh: Safari → tombol Share → \"Add to Home Screen\", lalu buka dari ikon ONE Absen");
+    if (!req) return hint();
+    if (p && p.catch) p.catch(hint);
+    setTimeout(() => { if (!(document.fullscreenElement || document.webkitFullscreenElement)) hint(); }, 700);
+  });
   $("pin-form").addEventListener("submit", async (ev) => {
     ev.preventDefault(); const empNo = $("pin-emp").value.trim();
     if (!empNo || pin.length !== 6) { $("pin-err").textContent = "Isi ID karyawan dan 6 digit PIN · Enter your Employee ID and 6-digit PIN"; return; }
@@ -203,7 +216,7 @@
       else { soundFail(); $("pin-err").textContent = r.reason === "locked" ? "Terlalu banyak percobaan — coba lagi 15 menit · Too many tries, wait 15 minutes" : r.reason === "no_pin" ? "PIN belum dibuat — atur di HRM → My Profile · No PIN set yet" : "ID atau PIN salah · Wrong ID or PIN"; }
     } catch (err) {
       if (err.fatal) return;
-      if (!err.status || err.status >= 500) { enqueue("pin", body); show("cam"); soundOk("Saved"); result("warn", `<h2>Tersimpan offline</h2><p>Saved offline — sent automatically when the connection is back.</p>`, 3500); }
+      if (!err.status || err.status >= 500) { enqueue("pin", body); show("cam"); soundOk("Saved"); result("warn", `${CK("warn")}<h2>Tersimpan offline</h2><p>Saved offline — sent automatically when the connection is back.</p>`, 3500); }
       else $("pin-err").textContent = "Gagal · Failed (" + err.message + ")";
     }
   });
