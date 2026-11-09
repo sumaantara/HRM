@@ -11,12 +11,13 @@
   const FN = (CFG.functionsUrl || (CFG.supabaseUrl + "/functions/v1")) + "/kiosk";
   let token = LS.get("hrm.kiosk.token"), kiosk = LS.get("hrm.kiosk.info"), offset = 0, threshold = 0.5;
   // what the tablet is doing, sent with "hello" so HR / support can see why a tablet doesn't record (no photos, no personal data)
-  const D = { v: "4.1", ua: navigator.userAgent.slice(0, 160), stage: "start", backend: "", modelsMs: 0, cam: "", detMs: 0, frames: 0, faces: 0, sent: 0, err: "" };
+  const D = { v: "4.2", ua: navigator.userAgent.slice(0, 160), stage: "start", backend: "", modelsMs: 0, cam: "", detMs: 0, frames: 0, faces: 0, sent: 0, err: "" };
   const diagErr = (e) => { D.err = String((e && (e.name ? e.name + ": " : "") + (e.message || e)) || "").slice(0, 160); };
 
   /* ---------- server ---------- */
   async function call(action, body) {
-    const r = await fetch(FN, { method: "POST", headers: { "Content-Type": "application/json", apikey: CFG.supabaseKey, Authorization: "Bearer " + CFG.supabaseKey }, body: JSON.stringify(Object.assign({ action, token }, body || {})) });
+    const ac = window.AbortController ? new AbortController() : null, tm = ac ? setTimeout(() => ac.abort(), 10000) : 0;   // bad Wi-Fi: give up after 10 s → saved offline
+    let r; try { r = await fetch(FN, { signal: ac ? ac.signal : undefined, method: "POST", headers: { "Content-Type": "application/json", apikey: CFG.supabaseKey, Authorization: "Bearer " + CFG.supabaseKey }, body: JSON.stringify(Object.assign({ action, token }, body || {})) }); } finally { clearTimeout(tm); }
     let j = {}; try { j = await r.json(); } catch (e) { /* empty */ }
     if (r.status === 401 && (j.error === "kiosk_revoked" || j.error === "no_token")) { unpair(); throw Object.assign(new Error("revoked"), { fatal: true }); }
     if (!r.ok) throw Object.assign(new Error(j.error || "http_" + r.status), { status: r.status, body: j });
